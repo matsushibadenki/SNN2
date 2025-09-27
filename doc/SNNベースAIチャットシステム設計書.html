@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SNNベース AIチャットシステム 設計書</title>
+    <style>
+        body {
+            font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif;
+            line-height: 1.8;
+            color: #333;
+            background-color: #f9f9f9;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 900px;
+            margin: 20px auto;
+            padding: 30px;
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+        header {
+            text-align: center;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        h1 {
+            color: #2c3e50;
+            font-size: 2.2em;
+            margin: 0;
+        }
+        h2 {
+            color: #34495e;
+            border-bottom: 2px solid #7f8c8d;
+            padding-bottom: 10px;
+            margin-top: 40px;
+        }
+        h3 {
+            color: #34495e;
+            border-left: 5px solid #3498db;
+            padding-left: 10px;
+            margin-top: 30px;
+        }
+        p, li {
+            font-size: 16px;
+        }
+        code {
+            font-family: 'Courier New', Courier, monospace;
+            background-color: #ecf0f1;
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-size: 0.95em;
+        }
+        pre {
+            background-color: #2d3436;
+            color: #dfe6e9;
+            padding: 20px;
+            border-radius: 6px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        pre code {
+            background-color: transparent;
+            padding: 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .note {
+            background-color: #eaf6ff;
+            border-left: 5px solid #3498db;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            color: #777;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <h1>SNNベース AIチャットシステム 設計書</h1>
+            <p>ドキュメントバージョン: 1.0 | 作成日: 2025年9月18日</p>
+        </header>
+
+        <main>
+            <section id="overview">
+                <h2>1. 概要</h2>
+                <h3>1.1. はじめに</h3>
+                <p>
+                    本設計書は、スパイキングニューラルネットワーク（SNN）技術を基盤とした、次世代のAIチャットシステムの設計について記述するものである。本システムは、従来の人工ニューラルネットワーク（ANN）に匹敵する性能を目指しつつ、エネルギー効率において圧倒的な優位性を持つことを最大の特徴とする。
+                </p>
+                <h3>1.2. 設計思想</h3>
+                <p>
+                    本システムの設計は、以下の思想に基づいている。
+                </p>
+                <ul>
+                    <li><strong>エネルギー効率の最大化:</strong> イベント駆動型の計算を行うSNNの特性を活かし、特にエッジデバイスや常時稼働システムでの超低消費電力動作を実現する。</li>
+                    <li><strong>時間情報処理:</strong> スパイクのタイミング情報を活用し、ANNが苦手とする複雑な時系列データや文脈のニュアンスを捉える能力を追求する。</li>
+                    <li><strong>スケーラビリティ:</strong> 巨大なテキストデータでの学習を可能にし、将来的にニューロモーフィックハードウェア上での動作を視野に入れた拡張性の高いアーキテクチャを採用する。</li>
+                </ul>
+            </section>
+
+            <hr>
+
+            <section id="architecture">
+                <h2>2. システムアーキテクチャ</h2>
+                <h3>2.1. 全体構成図</h3>
+                <p>
+                    システムは、テキスト入力を受け取り、一連の処理を経てテキスト応答を生成するパイプラインで構成される。
+                </p>
+                <div class="note">
+                    <strong>データフロー:</strong><br>
+                    テキスト入力 &rarr; <strong>[入力処理モジュール]</strong> &rarr; スパイク列 &rarr; <strong>[SNNコアエンジン]</strong> &rarr; 出力スパイク &rarr; <strong>[出力処理モジュール]</strong> &rarr; テキスト応答
+                </div>
+
+                <h3>2.2. コンポーネント詳細</h3>
+                <h4>入力処理モジュール</h4>
+                <p>ユーザーからのテキスト入力を、SNNコアエンジンが処理可能なスパイクの時空間パターンに変換する。</p>
+                <ol>
+                    <li><strong>トークン化:</strong> 入力テキストを単語またはサブワードのトークンに分割する。</li>
+                    <li><strong>単語埋め込み:</strong> 各トークンを、意味を表現する固定長のベクトル（Embedding Vector）に変換する。</li>
+                    <li><strong>スパイクエンコーディング（レートコーディング）:</strong> 埋め込みベクトルの各要素値をスパイクの発火率と見なし、時系列のスパイク列を生成する。</li>
+                </ol>
+
+                <h4>SNNコアエンジン</h4>
+                <p>システムの頭脳であり、入力されたスパイク列から文脈を理解し、応答の元となるスパイクを出力する。</p>
+                <ul>
+                    <li><strong>アーキテクチャ:</strong> PoC（概念実証）ではシンプルな全結合SNNを実装。本設計では、より高度な性能を目指し、計算量が線形で長期依存関係の扱いに優れた **SpikeGPT (SRWKV)** や **Spiking-SSM (状態空間モデル)** の採用を推奨する。</li>
+                    <li><strong>ニューロンモデル:</strong> 計算効率と生物学的妥当性のバランスが取れた **Leaky Integrate-and-Fire (LIF) モデル**を基本とする。</li>
+                </ul>
+
+                <h4>出力処理モジュール</h4>
+                <p>SNNコアエンジンから出力されたスパイクを、人間が読めるテキストに変換する。</p>
+                <ol>
+                    <li><strong>スパイクデコーディング:</strong> 全時間ステップにわたる出力ニューロンのスパイク総数を集計し、最も発火したニューロンを次のトークンとして選択する。</li>
+                    <li><strong>デトークン化:</strong> 選択されたトークンIDを単語に変換し、自然な文章として結合する。</li>
+                </ol>
+            </section>
+
+            <hr>
+
+            <section id="tech-stack">
+                <h2>3. 技術スタック</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>カテゴリ</th>
+                            <th>技術</th>
+                            <th>バージョン / 備考</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>プログラミング言語</td>
+                            <td>Python</td>
+                            <td>3.10以降</td>
+                        </tr>
+                        <tr>
+                            <td>機械学習バックエンド</td>
+                            <td>PyTorch</td>
+                            <td>2.6以降</td>
+                        </tr>
+                        <tr>
+                            <td>SNNフレームワーク</td>
+                            <td>SpikingJelly</td>
+                            <td>`spikingjelly-latest`</td>
+                        </tr>
+                        <tr>
+                            <td>主要ライブラリ</td>
+                            <td>NumPy</td>
+                            <td>データ操作用</td>
+                        </tr>
+                        <tr>
+                            <td>学習ターゲットハードウェア</td>
+                            <td>NVIDIA GPU</td>
+                            <td>CUDA対応</td>
+                        </tr>
+                        <tr>
+                            <td>推論ターゲットハードウェア</td>
+                            <td>CPU / Intel Loihi 2</td>
+                            <td>最終目標はニューロモーフィックハードウェア</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+            
+            <hr>
+
+            <section id="implementation">
+                <h2>4. 実装サンプルコード</h2>
+                <p>本設計の核となる部分のPython実装サンプルを示す。</p>
+                
+                <h3>4.1. SNNモデル定義 (TextSNN)</h3>
+                <pre><code class="language-python">
+# テキスト分類用のシンプルなSNNモデル
+class TextSNN(nn.Module):
+    def __init__(self, input_features, hidden_features, output_features):
+        super().__init__()
+        self.fc1 = nn.Linear(input_features, hidden_features)
+        self.lif1 = neuron.LIFNode(tau=2.0, surrogate_function=surrogate.ATan())
+        self.fc2 = nn.Linear(hidden_features, output_features)
+        self.lif2 = neuron.LIFNode(tau=2.0, surrogate_function=surrogate.ATan())
+
+    def forward(self, x: torch.Tensor):
+        # xの形状: (batch_size, time_steps, input_features)
+        functional.reset_net(self)
+        out_spikes_counter = torch.zeros(x.shape[0], self.fc2.out_features, device=x.device)
+
+        for t in range(x.shape[1]):
+            x_t = x[:, t, :]
+            y = self.fc1(x_t)
+            y = self.lif1(y)
+            y = self.fc2(y)
+            y = self.lif2(y)
+            out_spikes_counter += y
+        
+        return out_spikes_counter
+                </code></pre>
+
+                <h3>4.2. テキストからスパイクへの変換ロジック</h3>
+                <pre><code class="language-python">
+# 単語IDシーケンスをレートコーディングされたスパイク列に変換
+def text_to_spike_train(text_sequence, embedding_layer, time_steps):
+    # 1. 単語IDを埋め込みベクトルに変換
+    with torch.no_grad():
+        embedding_vectors = embedding_layer(torch.tensor(text_sequence, dtype=torch.long))
+    
+    # 2. 文章全体のベクトルを計算（単純な平均）
+    sentence_vector = torch.mean(embedding_vectors, dim=0)
+
+    # 3. レートコーディング: ベクトル値をスパイクの発火率と見なす
+    firing_rates = torch.clamp(sentence_vector, 0, 1)
+
+    # 4. スパイク列を生成
+    spike_train = torch.rand(time_steps, len(firing_rates)) < firing_rates
+    
+    return spike_train.float()
+                </code></pre>
+
+                <h3>4.3. 推論エンジンの主要メソッド</h3>
+                <pre><code class="language-python">
+# 単一のテキスト文章を受け取り、推論結果を返す
+def predict(self, text: str) -> str:
+    # 1. テキストを前処理してスパイク列に変換
+    spike_train_batch = self._preprocess(text)
+
+    # 2. SNNモデルで推論を実行
+    with torch.no_grad(): # 勾配計算は不要
+        outputs = self.model(spike_train_batch)
+
+    # 3. 結果を解釈（最も発火したニューロンを選択）
+    _, predicted_idx_tensor = torch.max(outputs.data, 1)
+    predicted_idx = predicted_idx_tensor.item()
+    
+    # 4. ラベルに変換して返す
+    return self.class_labels[predicted_idx]
+                </code></pre>
+            </section>
+
+            <hr>
+
+            <section id="outlook">
+                <h2>5. 課題と将来展望</h2>
+                <h3>5.1. 現在の課題</h3>
+                <ul>
+                    <li><strong>性能ギャップ:</strong> 現状、最大規模のANN（GPT-4等）と比較すると、SNNはNLPタスクの性能指標においてまだ及ばない点がある。</li>
+                    <li><strong>エコシステムの成熟度:</strong> SNNのツール、ライブラリ、ベストプラクティスは急速に発展しているものの、ANNのエコシステムに比べるとまだ小規模である。</li>
+                    <li><strong>学習の難しさ:</strong> 代理勾配法などの技術は進歩しているが、大規模なSNNの学習を安定させるには依然としてノウハウが必要となる。</li>
+                </ul>
+                <h3>5.2. 将来展望</h3>
+                <p>
+                    SNN技術は黎明期を越え、実用化に向けた重要な段階にある。ハードウェアとソフトウェアの両面で研究開発が加速しており、以下の点で大きな飛躍が期待される。
+                </p>
+                <ul>
+                    <li><strong>新アーキテクチャの台頭:</strong> Spiking-SSMのような、SNNの特性を活かしつつANNの計算上の課題を克服する新しいモデルが主流となる可能性がある。</li>
+                    <li><strong>ハードウェア・ソフトウェア協調設計:</strong> Intel Loihi 2のようなニューロモーフィックハードウェアの進化と、それを最大限に活用するためのソフトウェア設計が連携することで、SNNのポテンシャルが完全に引き出される。</li>
+                    <li><strong>応用分野の拡大:</strong> その圧倒的なエネルギー効率から、ウェアラブルデバイス、自律型ロボット、IoTセンサーなど、電力と計算リソースに厳しい制約がある分野でのキラーアプリケーション登場が期待される。</li>
+                </ul>
+            </section>
+        </main>
+
+        <footer>
+            <p>&copy; 2025 SNN System Design Project. All rights reserved.</p>
+        </footer>
+    </div>
+
+</body>
+</html>

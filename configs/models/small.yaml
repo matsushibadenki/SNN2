@@ -1,0 +1,10 @@
+# matsushibadenki/snn/configs/models/small.yaml
+# 小規模なデバッグ・開発用モデルのアーキテクチャ設定
+
+model:
+  path: "breakthrough_snn_model_small.pth" # モデルごとに保存パスを分ける
+  d_model: 128
+  d_state: 64
+  num_layers: 4
+  time_steps: 20
+  n_head: 2

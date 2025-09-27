@@ -1,0 +1,54 @@
+# matsushibadenki/snn/configs/base_config.yaml
+# プロジェクトの基本設定ファイル
+
+# 共通設定
+seed: 42
+device: "mps" # デフォルトのデバイスを "mps" に変更
+
+# データ設定
+data:
+  path: "data/wikitext-103_train.jsonl"
+  format: "simple_text"
+  split_ratio: 0.1 # 検証用データの割合
+  max_vocab_size: 50000
+  tokenizer_name: "gpt2"
+
+# 学習パラメータ設定
+training:
+  type: "standard"
+  epochs: 10
+  batch_size: 8
+  learning_rate: 0.0005
+  use_scheduler: true
+  grad_clip_norm: 1.0
+  warmup_epochs: 1
+  use_amp: true
+  
+  # ログと評価の設定
+  log_dir: "runs/snn_experiment" # TensorBoardのログ出力先
+  eval_interval: 1 # 何エポックごとに検証を実行するか
+  log_interval: 1 # 何エポックごとにチェックポイントを保存するか
+
+  # 損失関数の重み
+  loss:
+    ce_weight: 1.0
+    spike_reg_weight: 0.01
+
+  # 蒸留学습設定
+  distillation:
+    teacher_model: "gpt2"
+    loss:
+      ce_weight: 0.3
+      distill_weight: 0.7
+      spike_reg_weight: 0.01
+      temperature: 2.0
+
+# 推論/アプリ設定
+inference:
+  device: "mps" # 推論デバイスも "mps" に変更
+  max_len: 50
+
+# Gradioアプリ設定
+app:
+  server_name: "0.0.0.0"
+  server_port: 7860

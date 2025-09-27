@@ -1,0 +1,49 @@
+matsushibadenki/
+└── snn/
+    ├── app/
+    │   ├── __init__.py
+    │   ├── adapters/
+    │   │   ├── __init__.py
+    │   │   └── snn_langchain_adapter.py  # SNNモデルをLangChainカスタムLLM化するアダプタ
+    │   ├── containers.py                 # DIコンテナの定義 (このプロジェクトの心臓部)
+    │   ├── services/
+    │   │   ├── __init__.py
+    │   │   └── chat_service.py           # GradioやLangChainからの呼び出しを担うサービス層
+    │   └── main.py                       # Gradioアプリケーションの起動スクリプト (旧app.py)
+    │
+    ├── configs/
+    │   ├── __init__.py
+    │   ├── base_config.py                # 共通設定
+    │   └── model_configs.py              # モデルアーキテクチャ等の設定
+    │
+    ├── data/                             # 学習・評価用データ (既存のまま)
+    │
+    ├── scripts/
+    │   ├── __init__.py
+    │   ├── data_preparation.py           # データ準備スクリプト (旧data_preparation/prepare_wikitext.py)
+    │   └── run_benchmark.py              # ベンチマーク実行スクリプト (旧benchmark/sst2_benchmark.py)
+    │
+    ├── snn_research/
+    │   ├── __init__.py
+    │   ├── benchmark/
+    │   │   ├── __init__.py
+    │   │   └── ann_baseline.py           # ANNベースラインモデル (既存のまま)
+    │   ├── core/
+    │   │   ├── __init__.py
+    │   │   └── snn_core.py               # SNNコアモデル定義 (既存のまま)
+    │   ├── data/
+    │   │   ├── __init__.py
+    │   │   └── datasets.py               # 各種データセットクラス (main.pyから分離)
+    │   ├── training/
+    │   │   ├── __init__.py
+    │   │   ├── trainers.py               # BreakthroughTrainerとDistillationTrainer (main.pyとdistillation_train.pyから分離)
+    │   │   └── losses.py                 # CombinedLossとDistillationLoss (snn_core.pyとknowledge_distillation.pyから分離)
+    │   └── deployment.py                 # 最適化・デプロイ機能 (既存のまま)
+    │
+    ├── tests/                            # ユニットテスト用ディレクトリ
+    │   ├── __init__.py
+    │   └── ...
+    │
+    ├── train.py                          # 新しい学習実行スクリプト (旧main.py, distributed_train.pyなどを統合)
+    ├── requirements.txt
+    └── README.md

@@ -1,0 +1,17 @@
+# matsushibadenki/snn/requirements.txt
+
+torch>=2.0
+numpy<2.0
+spikingjelly
+datasets
+scikit-learn
+tqdm
+pandas
+transformers
+accelerate
+gradio
+dependency-injector[yaml]
+pyyaml
+langchain
+langchain-core
+tensorboard
