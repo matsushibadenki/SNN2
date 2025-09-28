@@ -1,19 +1,22 @@
-# matsushibadenki/snn2/SNN2-796d8b8cb001851a17a9fe6a9f3602b97403935d/snn_research/cognitive_architecture/global_workspace.py
+# matsushibadenki/snn2/snn_research/cognitive_architecture/global_workspace.py
 # Phase 3: グローバル・ワークスペース
 
 from snn_research.distillation.model_registry import ModelRegistry
 from snn_research.deployment import SNNInferenceEngine
 from snn_research.agent.memory import Memory
+from .rag_snn import RAGSystem
 from typing import Optional, Dict, Any
 import torch
 
 class GlobalWorkspace:
     """
     複数の専門家SNNモデルを管理し、思考の中核を担う。
+    RAGシステムと連携して知識を活用する。
     """
     def __init__(self):
         self.registry = ModelRegistry()
         self.memory = Memory()
+        self.rag_system = RAGSystem()
         self.active_specialists: Dict[str, SNNInferenceEngine] = {}
 
     def _load_specialist(self, task_description: str) -> Optional[SNNInferenceEngine]:
@@ -44,13 +47,24 @@ class GlobalWorkspace:
     def process_sub_task(self, sub_task: str, context: str) -> Optional[str]:
         """
         単一のサブタスクを実行する。
+        専門家が見つからない場合は、RAGシステムに問い合わせる。
         """
         specialist = self._load_specialist(sub_task)
         if not specialist:
-            print(f"⚠️ タスク '{sub_task}' を実行できる専門家が見つかりません。")
+            print(f"⚠️ タスク '{sub_task}' を実行できる専門家が見つかりません。RAGシステムに問い合わせます...")
             self.memory.add_entry("SPECIALIST_NOT_FOUND", {"task": sub_task})
-            # ここでKnowledgeDistillationManagerを呼び出し、学習をトリガーすることも可能
-            return None
+            
+            # RAGで関連情報を検索
+            rag_query = f"タスク「{sub_task}」の実行方法について"
+            rag_results = self.rag_system.search(rag_query)
+            
+            knowledge = "\n\n".join(rag_results)
+            print(f"🔍 RAGからの知識:\n---\n{knowledge}\n---")
+            self.memory.add_entry("RAG_SEARCH_PERFORMED", {"query": rag_query, "results": knowledge})
+            
+            # 現状では学習をトリガーせず、知識を基にした応答を返す
+            return f"専門家が見つかりませんでした。関連知識によると、タスク '{sub_task}' は以下のように処理される可能性があります: {knowledge}"
+
 
         print(f"🤖 専門家 '{sub_task}' が応答を生成中...")
         self.memory.add_entry("SUB_TASK_STARTED", {"sub_task": sub_task, "context": context})
