@@ -174,6 +174,7 @@ class AttentionalSpikingSSMLayer(nn.Module):
 
     def __init__(self, d_model: int, d_state: int = 64, n_head: int = 4):
         super().__init__()
+        self.d_model = d_model
         self.d_state = d_state
         self.n_head = n_head
         self.d_head = d_state // n_head
