@@ -1,8 +1,8 @@
-# matsushibadenki/snn2/snn_research/cognitive_architecture/hierarchical_planner.py
+# matsushibadenki/snn2/SNN2-796d8b8cb001851a17a9fe6a9f3602b97403935d/snn_research/cognitive_architecture/hierarchical_planner.py
 # Phase 3: 階層的思考プランナー
 
 from .global_workspace import GlobalWorkspace
-from .memory import Memory
+from snn_research.agent.memory import Memory
 from typing import Optional, Dict, Any, List
 
 class HierarchicalPlanner:
