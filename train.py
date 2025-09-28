@@ -2,6 +2,7 @@
 # DIコンテナを利用した、統合学習実行スクリプト (torchrun対応版)
 #
 # 変更点:
+# - 外部からDIコンテナの設定を上書きするための --override_config 引数を追加。
 # - Metal (mps) デバイスの可用性チェックをより堅牢にした。
 # - チェックポイントをロードして学習を再開する機能を追加。
 
@@ -70,6 +71,10 @@ def main():
     parser.add_argument("--data_path", type=str, help="データセットのパス (設定ファイルを上書き)")
     parser.add_argument("--data_format", type=str, choices=[f.value for f in DataFormat], help="データ形式 (設定ファイルを上書き)")
     parser.add_argument("--distributed", action="store_true", help="分散学習モードを有効にする")
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    parser.add_argument("--override_config", type=str, help="DIコンテナの設定を上書き (例: training.type=distillation)")
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+
     args = parser.parse_args()
 
     container = TrainingContainer()
@@ -77,6 +82,11 @@ def main():
     container.config.from_yaml(args.model_config)
     if args.data_path: container.config.data.path.from_value(args.data_path)
     if args.data_format: container.config.data.format.from_value(args.data_format)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    if args.override_config:
+        key, value = args.override_config.split('=')
+        container.config.from_dict({key: value})
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     set_seed(container.config.seed())
     

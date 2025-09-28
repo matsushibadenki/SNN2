@@ -2,6 +2,7 @@
 # SNNの実用デプロイメントのための最適化、監視、継続学習システム
 #
 # 変更点:
+# - SNNInferenceEngineがモデルをロードする際に strict=False を使用するように変更。
 # - mypyエラー解消のため、型ヒントを追加。
 # - 独自Vocabularyを廃止し、Hugging Face Tokenizerを使用するようにSNNInferenceEngineを修正。
 # - `generate` メソッドをストリーミング応答（ジェネレータ）に変更し、逐次的なテキスト生成を可能に。
@@ -27,18 +28,28 @@ class SNNInferenceEngine:
 
         from .core.snn_core import BreakthroughSNN
 
+        self.model_path = model_path
         self.device = torch.device(device)
         checkpoint = torch.load(model_path, map_location=self.device)
         
-        tokenizer_name = checkpoint['tokenizer_name']
+        # 'config' キーが存在しない古いチェックポイントにも対応
+        if 'config' in checkpoint:
+            self.config: Dict[str, Any] = checkpoint['config']
+            tokenizer_name = checkpoint.get('tokenizer_name', 'gpt2')
+        else:
+            # 古いbest_model.pthの場合のフォールバック
+            print("⚠️ 古い形式のチェックポイントです。デフォルト設定を使用します。")
+            self.config = {'d_model': 128, 'd_state': 64, 'num_layers': 4, 'time_steps': 20, 'n_head': 2}
+            tokenizer_name = 'gpt2'
+
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-        self.config: Dict[str, Any] = checkpoint['config']
         
         self.model = BreakthroughSNN(vocab_size=self.tokenizer.vocab_size, **self.config).to(self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # 状態バッファを含まない可能性のあるstate_dictを読み込むため、strict=False を使用
+        self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         self.model.eval()
         self.last_inference_stats: Dict[str, Any] = {}
 
@@ -153,4 +164,3 @@ class NeuromorphicDeploymentManager:
             'continual_learner': ContinualLearningEngine(optimized_model)
         }
         print(f"✅ デプロイメント完了: {name}")
-
