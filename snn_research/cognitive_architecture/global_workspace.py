@@ -1,9 +1,9 @@
-# matsushibadenki/snn2/snn_research/cognitive_architecture/global_workspace.py
+# matsushibadenki/snn2/SNN2-796d8b8cb001851a17a9fe6a9f3602b97403935d/snn_research/cognitive_architecture/global_workspace.py
 # Phase 3: グローバル・ワークスペース
 
 from snn_research.distillation.model_registry import ModelRegistry
 from snn_research.deployment import SNNInferenceEngine
-from .memory import Memory
+from snn_research.agent.memory import Memory
 from typing import Optional, Dict, Any
 import torch
 
