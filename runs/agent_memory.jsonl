@@ -1,0 +1,8 @@
+{"timestamp": "2025-09-29T07:47:27.106421", "event_type": "TASK_RECEIVED", "details": {"task": "感情分析", "unlabeled_data_path": null, "force_retrain": false}}
+{"timestamp": "2025-09-29T07:47:27.106543", "event_type": "MODEL_SELECTION_STARTED", "details": {"task": "感情分析"}}
+{"timestamp": "2025-09-29T07:47:27.106578", "event_type": "MODEL_SELECTION_ENDED", "details": {"result": "no_candidates_found"}}
+{"timestamp": "2025-09-29T07:47:27.106606", "event_type": "ERROR_ENCOUNTERED", "details": {"reason": "新しいモデルを学習するためには --unlabeled_data_path が必要です。"}}
+{"timestamp": "2025-09-29T07:59:58.764771", "event_type": "TASK_RECEIVED", "details": {"task": "文章要約", "unlabeled_data_path": "data/sample_data.jsonl", "force_retrain": false}}
+{"timestamp": "2025-09-29T07:59:58.764955", "event_type": "MODEL_SELECTION_STARTED", "details": {"task": "文章要約"}}
+{"timestamp": "2025-09-29T07:59:58.764985", "event_type": "MODEL_SELECTION_ENDED", "details": {"result": "no_candidates_found"}}
+{"timestamp": "2025-09-29T07:59:58.765012", "event_type": "TRAINING_INITIATED", "details": {"task": "文章要約"}}

@@ -1,5 +1,6 @@
 # **SNNベース AIチャットシステム (v2.7 \- 高次認知アーキテクチャ)**
 
+
 ## **1\. 概要**
 
 本プロジェクトは、スパイキングニューラルネットワーク（SNN）技術を基盤とした、次世代のAIチャットシステムです。最終目標は、自ら思考し、学習し、自己を改良する**自律的デジタル生命体**を創造することにあります。
@@ -12,6 +13,8 @@
 * **高次認知:** 複数の専門家SNNとRAG（Retrieval-Augmented Generation）システムを連携させ、複雑なタスクを複数のサブタスクに分解・計画し、実行する高次の問題解決能力を持ちます。
 
 アーキテクチャ全体は、依存性の注入（DI）コンテナを用いて構築されており、研究開発からアプリケーション化までをシームレスに繋ぐ、高い保守性と拡張性を実現しています。
+
+
 
 ## **2\. システムの実行方法**
 
@@ -30,6 +33,7 @@ pip install \-r requirements.txt
 | run\_agent.py | **【推奨】自律エージェントの操作**。単一のタスクを解決させたい場合に利用。 | 一般利用者 |
 | run\_planner.py | **高次認知プランナーの操作**。複数の手順を要する複雑なタスクを解決させたい場合に利用。 | 一般利用者 |
 | app/main.py | **対話UIの起動**。学習済みモデルとチャットするためのWeb UIを起動します。 | 一般利用者 |
+| scripts/convert\_model.py | **【開発者向け】ANN-SNN変換・蒸留**。既存のモデルファイルからSNNを生成します。 | 開発者 |
 | train.py | **【開発者向け】学習プロセスの手動実行**。モデルの学習を細かく制御したい場合に利用。 | 開発者 |
 | run\_distillation.py | 知識蒸留を手動で実行する旧来のスクリプト。現在はrun\_agent.pyの利用を推奨。 | 開発者 |
 
@@ -104,7 +108,7 @@ python train.py \\
     \--data\_path precomputed\_data/sentiment\_analysis \\  
     \--override\_config "training.type=distillation"
 
-*\--override\_config 引数で、base\_config.yamlの設定を動的に上書きできます。*
+*\*--override\_config 引数で、base\_config.yamlの設定を動的に上書きできます。*
 
 #### **例3: 分散学習 (マルチGPU)**
 
@@ -132,6 +136,35 @@ python \-m app.langchain\_main \--model\_config configs/models/medium.yaml
 
 ブラウザで http://0.0.0.0:7860 (LangChain版は 7861\) を開いてください。
 
+### **2.6. 【開発者向け】既存ANNモデルからの直接変換・蒸留 (scripts/convert\_model.py)**
+
+scripts/convert\_model.py は、手元にあるANNモデルファイル（.safetensors, .gguf）から直接SNNモデルを生成するためのツールです。
+
+#### **例1: ANN-SNN 重み変換**
+
+llama.safetensors というモデルの重みを、small.yaml で定義されたアーキテクチャを持つSNNに直接コピーし、converted\_snn.pth として保存します。
+
+python scripts/convert\_model.py \\  
+    \--method convert \\  
+    \--ann\_model\_path path/to/llama.safetensors \\  
+    \--snn\_model\_config configs/models/small.yaml \\  
+    \--output\_snn\_path runs/converted\_snn.pth
+
+**注意:** この方法は、ANNとSNNの層の名前や構造がある程度一致している必要があります。
+
+#### **例2: オンライン知識蒸留**
+
+llama.safetensors を教師役としてメモリにロードし、SNNモデルをオンラインで模倣学習させ、distilled\_snn.pth として保存します。  
+（注: 以下のコマンドは、教師モデルのロード部分がダミー実装です。実際の動作にはann\_to\_snn\_converter.py内のモデルロード部分の調整が必要です。）  
+python scripts/convert\_model.py \\  
+    \--method distill \\  
+    \--ann\_model\_path path/to/llama.safetensors \\  
+    \--snn\_model\_config configs/models/small.yaml \\  
+    \--output\_snn\_path runs/distilled\_snn.pth
+
+
+
+
 ## **3\. プロジェクト構造**
 
 * /app: Gradio UIやLangChain連携など、アプリケーション層のコード。  
@@ -141,6 +174,9 @@ python \-m app.langchain\_main \--model\_config configs/models/medium.yaml
 * /runs: 学習済みモデル、ログ、モデル登録簿、ベクトルストアなど、実行時に生成されるファイル。  
 * /scripts: データ準備や知識ベース構築など、補助的なスクリプト。  
 * /snn\_research: SNNのコアロジック、学習パイプライン、認知アーキテクチャなど、研究開発の中核をなすコード。
+
+
+
 
 ## **4\. ロードマップ**
 

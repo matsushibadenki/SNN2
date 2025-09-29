@@ -17,3 +17,5 @@ langchain-core
 tensorboard
 faiss-cpu
 sentence-transformers
+safetensors
+gguf
