@@ -13,7 +13,7 @@
 
 アーキテクチャ全体は、依存性の注入（DI）コンテナを用いて構築されており、研究開発からアプリケーション化までをシームレスに繋ぐ、高い保守性と拡張性を実現しています。
 
-## **2\. 使い方 (How to Use)**
+## **2\. システムの実行方法**
 
 ### **ステップ1: 環境設定**
 
@@ -21,7 +21,19 @@
 
 pip install \-r requirements.txt
 
-### **ステップ2: 自律エージェントの基本操作**
+### **2.1. 主要な実行スクリプトの役割**
+
+このプロジェクトには、目的別にいくつかの実行スクリプトが用意されています。
+
+| スクリプト | 役割 | 主な利用者 |
+| :---- | :---- | :---- |
+| run\_agent.py | **【推奨】自律エージェントの操作**。単一のタスクを解決させたい場合に利用。 | 一般利用者 |
+| run\_planner.py | **高次認知プランナーの操作**。複数の手順を要する複雑なタスクを解決させたい場合に利用。 | 一般利用者 |
+| app/main.py | **対話UIの起動**。学習済みモデルとチャットするためのWeb UIを起動します。 | 一般利用者 |
+| train.py | **【開発者向け】学習プロセスの手動実行**。モデルの学習を細かく制御したい場合に利用。 | 開発者 |
+| run\_distillation.py | 知識蒸留を手動で実行する旧来のスクリプト。現在はrun\_agent.pyの利用を推奨。 | 開発者 |
+
+### **2.2. 基本操作: 自律エージェントによるタスク処理 (run\_agent.py)**
 
 run\_agent.py は、エージェントに単一のタスクを依頼するための基本的なインターフェースです。
 
@@ -46,13 +58,11 @@ python run\_agent.py \\
 
 エージェントは「文章要約」モデルが存在しないことを検知し、data/sample\_data.jsonlを使って新しい専門家の学習を自動的に開始します。学習完了後、そのモデルを使ってプロンプトに対する要約を生成します。
 
-*(Note: 手動で専門家を学習させたい場合は run\_distillation.py を使用することも可能です。)*
-
-### **ステップ3: 高次認知アーキテクチャの実行**
+### **2.3. 応用操作: 高次認知プランナーによる複雑なタスク処理 (run\_planner.py)**
 
 run\_planner.py は、エージェントに複数のステップを要する複雑なタスクを依頼するためのインターフェースです。プランナーは内部でRAGシステムを利用し、自己の知識ベース（ドキュメントや過去の記憶）を参照します。
 
-#### **3.1. 知識ベースの構築 (初回のみ)**
+#### **2.3.1. 知識ベースの構築 (初回のみ)**
 
 プランナーを実行する前に、RAGシステムが検索するためのベクトル化された知識ベースを構築する必要があります。
 
@@ -60,7 +70,7 @@ python scripts/build\_knowledge\_base.py
 
 このコマンドは doc ディレクトリと runs/agent\_memory.jsonl の内容を読み込み、検索可能なインデックスを runs/vector\_store に作成します。
 
-#### **3.2. 階層的プランナーによる複雑なタスクの実行**
+#### **2.3.2. 階層的プランナーによる複雑なタスクの実行**
 
 知識ベースの準備ができたら、プランナーに複雑なタスクを依頼できます。
 
@@ -70,15 +80,53 @@ python run\_planner.py \\
 
 プランナーはタスクを「文章要約」と「感情分析」の2つのサブタスクに分解し、それぞれに対応する専門家を呼び出して、段階的に問題を解決します。もし専門家が見つからない場合は、RAGシステムが検索した関連知識を返します。
 
-### **ステップ4: 対話アプリケーションの起動 (Gradio UI)**
+### **2.4. 開発者向け: 学習プロセスの手動実行 (train.py)**
+
+train.pyは、モデルの学習プロセスを直接的かつ詳細に制御したい開発者向けの低レベルインターフェースです。自律エージェントも内部でこのスクリプトに類する処理を呼び出しています。
+
+#### **例1: 標準的な事前学習**
+
+大規模なテキストデータセット（wikitext-103など）を用いて、汎用的な言語モデルをゼロから学習させます。
+
+python train.py \\  
+    \--config configs/base\_config.yaml \\  
+    \--model\_config configs/models/medium.yaml \\  
+    \--data\_path data/wikitext-103\_train.jsonl \\  
+    \--data\_format simple\_text
+
+#### **例2: 知識蒸留**
+
+特定のタスク（例: 感情分析）のために事前計算された教師モデルのデータ（ロジット）を用いて、小型の専門家SNNを学習させます。
+
+python train.py \\  
+    \--config configs/base\_config.yaml \\  
+    \--model\_config configs/models/small.yaml \\  
+    \--data\_path precomputed\_data/sentiment\_analysis \\  
+    \--override\_config "training.type=distillation"
+
+*\--override\_config 引数で、base\_config.yamlの設定を動的に上書きできます。*
+
+#### **例3: 分散学習 (マルチGPU)**
+
+複数のGPUを使用して大規模モデルの学習を高速化します。torchrunユーティリティを使用します。scripts/run\_distributed\_training.sh はそのための便利なラッパースクリプトです。
+
+\# 推奨: ラッパースクリプトを使用  
+bash scripts/run\_distributed\_training.sh
+
+\# もしくは直接torchrunを使用 (2GPUの場合)  
+torchrun \--nproc\_per\_node=2 train.py \\  
+    \--distributed \\  
+    \--model\_config configs/models/medium.yaml
+
+### **2.5. 対話アプリケーションの起動 (Gradio UI)**
 
 学習済みのモデルと直接対話するためのWeb UIも用意されています。
 
-#### **4.1. 標準チャットUI**
+#### **標準チャットUI**
 
 python \-m app.main \--model\_config configs/models/medium.yaml
 
-#### **4.2. LangChain連携チャットUI**
+#### **LangChain連携チャットUI**
 
 python \-m app.langchain\_main \--model\_config configs/models/medium.yaml
 
