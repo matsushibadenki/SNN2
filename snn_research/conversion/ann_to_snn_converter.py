@@ -9,10 +9,12 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F  # ◾️◾️◾️◾️◾️ Fをインポート ◾️◾️◾️◾️◾️
+import torch.nn.functional as F
 from safetensors.torch import load_file
-from tqdm import tqdm  # type: ignore # ◾️◾️◾️◾️◾️ mypyのエラーを無視 ◾️◾️◾️◾️◾️
+from tqdm import tqdm  # type: ignore
 from typing import Dict, Any, Optional
+
+from snn_research.benchmark.ann_baseline import ANNBaselineModel
 
 # GGUFローダーのプレースホルダー (実際のプロジェクトではggufライブラリを使用)
 def _load_gguf_placeholder(path: str) -> Dict[str, torch.Tensor]:
@@ -54,7 +56,7 @@ class AnnToSnnConverter:
         else:
             raise ValueError("サポートされていないファイル形式です。.safetensorsまたは.ggufを指定してください。")
 
-    def convert_weights(self, ann_model_path: str, output_path: str):
+    def convert_weights(self, ann_model_path: str, output_path: str) -> None:
         """
         ANN-SNN変換（重みコピー）を実行する。
         """
@@ -87,7 +89,7 @@ class AnnToSnnConverter:
         dummy_data_loader: Any, # 本来は学習データローダー
         output_path: str,
         epochs: int = 3
-    ):
+    ) -> None:
         """
         オンライン知識蒸留を実行する。
         """
@@ -112,7 +114,6 @@ class AnnToSnnConverter:
                 
                 # ANN (教師) の出力を取得
                 with torch.no_grad():
-                    # ◾️◾️◾️◾️◾️ 教師モデルのフォワードパスを修正 ◾️◾️◾️◾️◾️
                     if isinstance(ann_teacher_model, ANNBaselineModel):
                          teacher_logits = ann_teacher_model(inputs)
                     else:
@@ -134,3 +135,4 @@ class AnnToSnnConverter:
             'config': self.model_config
         }, output_path)
         print(f"✅ 知識蒸留が完了し、モデルを '{output_path}' に保存しました。")
+
