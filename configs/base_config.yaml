@@ -42,9 +42,7 @@ training:
       ce_weight: 0.3
       distill_weight: 0.7
       spike_reg_weight: 0.01
-      # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
       sparsity_reg_weight: 0.00001
-      # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
       temperature: 2.0
 
 # 推論/アプリ設定
