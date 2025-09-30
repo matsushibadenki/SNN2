@@ -7,6 +7,7 @@
 # - AttentionalSpikingSSMLayerの出力にLIFニューロンを再追加し、SNNとしての特性を強化。
 # - AttentionalSpikingSSMLayerにSTDP（スパイクタイミング依存可塑性）を統合し、ハイブリッド学習を実現。
 # - 位置情報を考慮した新しい「PositionalSpikeEncoder」を追加し、情報表現能力を向上。
+# - mypyエラーを解消するため、PositionalSpikeEncoderに型ヒントを追加。
 
 import torch
 import torch.nn as nn
@@ -15,11 +16,14 @@ from spikingjelly.activation_based import surrogate, functional  # type: ignore
 from typing import Tuple, Dict, Any, Optional
 import math
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 class PositionalSpikeEncoder(nn.Module):
     """
     位置エンコーディングを利用して、時間的・空間的に豊かなスパイクパターンを生成するエンコーダ。
     """
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    pe: torch.Tensor # mypyにself.peがTensorであることを教える
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+
     def __init__(self, d_model: int, time_steps: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
         self.d_model = d_model
@@ -58,7 +62,6 @@ class PositionalSpikeEncoder(nn.Module):
             spikes[:, t, :, :] = (torch.rand_like(x_norm) < x_norm).float()
             
         return spikes
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 class TTFSEncoder(nn.Module):
@@ -337,15 +340,12 @@ class BreakthroughSNN(nn.Module):
         num_layers: int,
         time_steps: int,
         n_head: int,
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         encoder_type: str = "positional", # デフォルトを新しいエンコーダに変更
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     ):
         super().__init__()
         self.time_steps = time_steps
         self.token_embedding = nn.Embedding(vocab_size, d_model)
 
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.spike_encoder: nn.Module
         if encoder_type == "ttfs":
             self.spike_encoder = TTFSEncoder(d_model=d_model, time_steps=time_steps)
@@ -362,7 +362,6 @@ class BreakthroughSNN(nn.Module):
             self.spike_encoder = ExpandEncoder(time_steps)
         else:
             raise ValueError(f"Unknown encoder type: {encoder_type}")
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         self.ssm_layers = nn.ModuleList(
             [
@@ -384,10 +383,8 @@ class BreakthroughSNN(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         token_emb = self.token_embedding(input_ids)
 
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         # 選択されたエンコーダでスパイク列を生成
         hidden_states = self.spike_encoder(token_emb)
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         all_spikes = []
         for layer in self.ssm_layers:
