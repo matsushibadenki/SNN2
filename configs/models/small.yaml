@@ -8,3 +8,9 @@ model:
   num_layers: 4
   time_steps: 20
   n_head: 2
+  # ニューロン設定
+  neuron:
+    type: "lif" # "lif" または "dendritic"
+    # typeが "dendritic" の場合のみ使用されるパラメータ
+    num_branches: 4
+    branch_features: 32 # 例: d_model / num_branches
