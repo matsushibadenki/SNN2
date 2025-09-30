@@ -9,6 +9,7 @@
 # - チェックポイントの保存・読み込みロジックを修正し、バッファを除外して再開時のサイズミスマッチエラーを解消。
 # - 損失関数にモデル全体を渡し、スパース性などのハードウェアを意識した正則化を可能に。
 # - [改善] BreakthroughSNNのアーキテクチャ変更に対応し、シーケンス全体の損失を計算するように_run_stepを修正。
+# - [追加] AstrocyteNetworkと連携し、学習中のグローバル活動を監視・調整する機能を追加。
 
 import torch
 import torch.nn as nn
@@ -20,13 +21,15 @@ from typing import Tuple, Dict, Any, Optional
 import shutil
 
 from snn_research.training.losses import CombinedLoss, DistillationLoss
+from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from torch.utils.tensorboard import SummaryWriter
 
 class BreakthroughTrainer:
     """モニタリングと評価機能を完備した、SNNの統合トレーニングシステム。"""
     def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module,
                  scheduler: Optional[torch.optim.lr_scheduler.LRScheduler], device: str,
-                 grad_clip_norm: float, rank: int, use_amp: bool, log_dir: str):
+                 grad_clip_norm: float, rank: int, use_amp: bool, log_dir: str,
+                 astrocyte_network: Optional[AstrocyteNetwork] = None):
         self.model = model
         self.device = device
         self.optimizer = optimizer
@@ -35,6 +38,7 @@ class BreakthroughTrainer:
         self.grad_clip_norm = grad_clip_norm
         self.rank = rank
         self.use_amp = use_amp and self.device != 'mps'
+        self.astrocyte_network = astrocyte_network # アストロサイトを追加
         
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         self.best_metric = float('inf')
@@ -53,7 +57,7 @@ class BreakthroughTrainer:
         
         with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
             with torch.set_grad_enabled(is_train):
-                logits, spikes, mem = self.model(input_ids)
+                logits, spikes, mem = self.model(input_ids, return_spikes=True)
                 loss_dict = self.criterion(logits, target_ids, spikes, mem, self.model)
         
         if is_train:
@@ -70,6 +74,10 @@ class BreakthroughTrainer:
                 if self.grad_clip_norm > 0:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.optimizer.step()
+            
+            # アストロサイトにステップを通知
+            if self.astrocyte_network:
+                self.astrocyte_network.step()
 
         with torch.no_grad():
             preds = torch.argmax(logits, dim=-1)
@@ -130,7 +138,7 @@ class BreakthroughTrainer:
             model_to_save = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             
             # 状態を持たないニューロンのバッファ（memなど）は保存しない
-            buffer_names = {name for name, _ in model_to_save.named_buffers() if 'mem' not in name and 'adaptive_threshold' not in name}
+            buffer_names = {name for name, _ in model_to_save.named_buffers() if 'mem' not in name}
             model_state = {k: v for k, v in model_to_save.state_dict().items() if k not in buffer_names}
 
             state = {
@@ -197,7 +205,7 @@ class DistillationTrainer(BreakthroughTrainer):
 
         with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
             with torch.set_grad_enabled(is_train):
-                student_logits, spikes, mem = self.model(student_input)
+                student_logits, spikes, mem = self.model(student_input, return_spikes=True)
                 
                 assert isinstance(self.criterion, DistillationLoss)
                 loss_dict = self.criterion(
@@ -216,5 +224,9 @@ class DistillationTrainer(BreakthroughTrainer):
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            
+            # アストロサイトにステップを通知
+            if self.astrocyte_network:
+                self.astrocyte_network.step()
         
         return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
