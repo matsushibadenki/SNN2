@@ -64,7 +64,7 @@ class AnnToSnnConverter:
         変換後のSNNモデルの発火閾値をキャリブレーションする。
         """
         print(f"⚙️ 発火閾値のキャリブレーションを開始します (目標発火率: {target_rate:.2f})...")
-        self.snn_model.eval()
+        self.snn_model.train() # trainモードで実行し、適応的閾値を更新させる
 
         # 適応的閾値を持つニューロン層のみを対象とする
         lif_layers = [m for m in self.snn_model.modules() if isinstance(m, AdaptiveLIFNeuron)]
@@ -72,24 +72,25 @@ class AnnToSnnConverter:
             print("⚠️ 適応的閾値を持つLIFニューロンが見つからないため、キャリブレーションをスキップします。")
             return
 
+        # 目標発火率を設定
+        for layer in lif_layers:
+            layer.target_spike_rate = target_rate
+
         with torch.no_grad():
             for epoch in range(epochs):
                 for batch in tqdm(calibration_loader, desc=f"Calibration Epoch {epoch+1}"):
-                    # BreakthroughSNNは(input_ids, attention_mask)のタプルを期待しない
-                    # DataLoaderからの出力がタプルであれば最初の要素を取得する
                     if isinstance(batch, (list, tuple)):
                         inputs = batch[0].to(self.device)
                     else:
                         inputs = batch.to(self.device)
-
-                    # モデルを一度実行して、内部の発火率を更新させる
-                    # 閾値の更新はAdaptiveLIFNeuronのフォワードパス内で自動的に行われる
+                    # モデルを実行してAdaptiveLIFNeuron内の閾値更新ロジックをトリガー
                     self.snn_model(inputs)
 
         print("✅ キャリブレーションが完了しました。")
         for i, layer in enumerate(lif_layers):
             avg_threshold = layer.adaptive_threshold.mean().item()
             print(f"  - Layer {i+1} の平均閾値: {avg_threshold:.4f}")
+        self.snn_model.eval() # 評価モードに戻す
 
     def convert_weights(
         self,
@@ -122,7 +123,6 @@ class AnnToSnnConverter:
         # 閾値キャリブレーションを実行
         if calibration_loader:
             self.calibrate_thresholds(calibration_loader)
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         # 変換後のSNNモデルを保存
         torch.save({
