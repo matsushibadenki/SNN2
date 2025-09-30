@@ -5,6 +5,7 @@
 # - 指定されたパスからSafetensorsまたはGGUFモデルの重みをロードする。
 # - ANN-SNN変換: ANNの重みをSNNモデルに直接コピーする。
 # - オンライン知識蒸留: ANNを教師モデルとして、SNNを学習させる。
+# - 閾値キャリブレーション機能を追加し、変換後のSNNの活動を安定させる。
 
 import torch
 import torch.nn as nn
@@ -12,9 +13,10 @@ import torch.optim as optim
 import torch.nn.functional as F
 from safetensors.torch import load_file
 from tqdm import tqdm  # type: ignore
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Iterator
 
 from snn_research.benchmark.ann_baseline import ANNBaselineModel
+from snn_research.core.snn_core import AdaptiveLIFNeuron, BreakthroughSNN
 
 # GGUFローダーのプレースホルダー (実際のプロジェクトではggufライブラリを使用)
 def _load_gguf_placeholder(path: str) -> Dict[str, torch.Tensor]:
@@ -56,9 +58,47 @@ class AnnToSnnConverter:
         else:
             raise ValueError("サポートされていないファイル形式です。.safetensorsまたは.ggufを指定してください。")
 
-    def convert_weights(self, ann_model_path: str, output_path: str) -> None:
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    def calibrate_thresholds(self, calibration_loader: Any, target_rate: float = 0.1, epochs: int = 1):
         """
-        ANN-SNN変換（重みコピー）を実行する。
+        変換後のSNNモデルの発火閾値をキャリブレーションする。
+        """
+        print(f"⚙️ 発火閾値のキャリブレーションを開始します (目標発火率: {target_rate:.2f})...")
+        self.snn_model.eval()
+
+        # 適応的閾値を持つニューロン層のみを対象とする
+        lif_layers = [m for m in self.snn_model.modules() if isinstance(m, AdaptiveLIFNeuron)]
+        if not lif_layers:
+            print("⚠️ 適応的閾値を持つLIFニューロンが見つからないため、キャリブレーションをスキップします。")
+            return
+
+        with torch.no_grad():
+            for epoch in range(epochs):
+                for batch in tqdm(calibration_loader, desc=f"Calibration Epoch {epoch+1}"):
+                    # BreakthroughSNNは(input_ids, attention_mask)のタプルを期待しない
+                    # DataLoaderからの出力がタプルであれば最初の要素を取得する
+                    if isinstance(batch, (list, tuple)):
+                        inputs = batch[0].to(self.device)
+                    else:
+                        inputs = batch.to(self.device)
+
+                    # モデルを一度実行して、内部の発火率を更新させる
+                    # 閾値の更新はAdaptiveLIFNeuronのフォワードパス内で自動的に行われる
+                    self.snn_model(inputs)
+
+        print("✅ キャリブレーションが完了しました。")
+        for i, layer in enumerate(lif_layers):
+            avg_threshold = layer.adaptive_threshold.mean().item()
+            print(f"  - Layer {i+1} の平均閾値: {avg_threshold:.4f}")
+
+    def convert_weights(
+        self,
+        ann_model_path: str,
+        output_path: str,
+        calibration_loader: Optional[Any] = None
+    ) -> None:
+        """
+        ANN-SNN変換（重みコピー）を実行し、オプションで閾値キャリブレーションを行う。
         """
         ann_weights = self._load_ann_weights(ann_model_path)
         snn_state_dict = self.snn_model.state_dict()
@@ -67,14 +107,22 @@ class AnnToSnnConverter:
         
         # ANNとSNNでキー名が対応していると仮定してコピー
         # 実際にはモデル構造に合わせてマッピングロジックが必要
+        copied_keys = 0
         for name, param in snn_state_dict.items():
             if name in ann_weights and param.shape == ann_weights[name].shape:
                 snn_state_dict[name].copy_(ann_weights[name])
-                print(f"  - コピー成功: {name}")
+                copied_keys += 1
             else:
-                print(f"  - ⚠️ スキップ（キー不一致または形状不一致）: {name}")
+                # 形状やキーが一致しない場合はスキップ
+                pass
+        
+        print(f"  - {copied_keys}個のパラメータをコピーしました。")
+        self.snn_model.load_state_dict(snn_state_dict, strict=False)
 
-        self.snn_model.load_state_dict(snn_state_dict)
+        # 閾値キャリブレーションを実行
+        if calibration_loader:
+            self.calibrate_thresholds(calibration_loader)
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         # 変換後のSNNモデルを保存
         torch.save({
@@ -105,7 +153,13 @@ class AnnToSnnConverter:
         for epoch in range(epochs):
             progress_bar = tqdm(dummy_data_loader, desc=f"Distillation Epoch {epoch+1}")
             for batch in progress_bar:
-                inputs = batch.to(self.device)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+                # DataLoaderからの出力がタプルかチェック
+                if isinstance(batch, (list, tuple)):
+                    inputs = batch[0].to(self.device)
+                else:
+                    inputs = batch.to(self.device)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 
                 optimizer.zero_grad()
                 
@@ -135,4 +189,3 @@ class AnnToSnnConverter:
             'config': self.model_config
         }, output_path)
         print(f"✅ 知識蒸留が完了し、モデルを '{output_path}' に保存しました。")
-
