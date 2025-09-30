@@ -10,6 +10,7 @@
 # - 損失関数にpad_idではなくtokenizerプロバイダを渡すように修正し、依存関係の解決を遅延させる。
 # - スケジューラの依存関係問題を解決するため、メソッドから独立した関数ファクトリにリファクタリング。
 # - Trainerの定義にuse_ampとlog_dirを追加。
+# - [追加] AstrocyteNetworkプロバイダを追加。
 
 import torch
 from dependency_injector import containers, providers
@@ -22,6 +23,7 @@ from snn_research.core.snn_core import BreakthroughSNN
 from snn_research.deployment import SNNInferenceEngine
 from snn_research.training.losses import CombinedLoss, DistillationLoss
 from snn_research.training.trainers import BreakthroughTrainer, DistillationTrainer
+from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from .services.chat_service import ChatService
 from .adapters.snn_langchain_adapter import SNNLangChainAdapter
 
@@ -81,6 +83,12 @@ class TrainingContainer(containers.DeclarativeContainer):
         time_steps=config.model.time_steps,
         n_head=config.model.n_head,
     )
+    
+    # --- 認知アーキテクチャ ---
+    astrocyte_network = providers.Factory(
+        AstrocyteNetwork,
+        snn_model=snn_model
+    )
 
     # --- 学習コンポーネント ---
     optimizer = providers.Factory(
@@ -102,6 +110,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         ce_weight=config.training.loss.ce_weight,
         spike_reg_weight=config.training.loss.spike_reg_weight,
         sparsity_reg_weight=config.training.loss.sparsity_reg_weight,
+        mem_reg_weight=config.training.loss.mem_reg_weight,
         tokenizer=tokenizer,
     )
     distillation_loss = providers.Factory(
@@ -110,6 +119,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         distill_weight=config.training.distillation.loss.distill_weight,
         spike_reg_weight=config.training.distillation.loss.spike_reg_weight,
         sparsity_reg_weight=config.training.distillation.loss.sparsity_reg_weight,
+        mem_reg_weight=config.training.distillation.loss.mem_reg_weight,
         temperature=config.training.distillation.loss.temperature,
         tokenizer=tokenizer,
     )
