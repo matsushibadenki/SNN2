@@ -1,4 +1,4 @@
-# matsushibadenki/snn2/snn_research/core/snn_core.py
+# matsushibadenki/snn2/SNN2-be42f9201d826ddfbd8381ce2a3e57acab536101/snn_research/core/snn_core.py
 # SNNモデルの定義、次世代ニューロンなど、中核となるロジックを集約したライブラリ
 #
 # 変更点:
@@ -20,9 +20,7 @@ class PositionalSpikeEncoder(nn.Module):
     """
     位置エンコーディングを利用して、時間的・空間的に豊かなスパイクパターンを生成するエンコーダ。
     """
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     pe: torch.Tensor # mypyにself.peがTensorであることを教える
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     def __init__(self, d_model: int, time_steps: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
