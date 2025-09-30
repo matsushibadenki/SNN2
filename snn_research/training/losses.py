@@ -13,7 +13,6 @@ import torch.nn.functional as F
 from typing import Dict
 from transformers import PreTrainedTokenizerBase
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 def _calculate_sparsity_loss(model: nn.Module) -> torch.Tensor:
     """モデルの重みのL1ノルムを計算し、スパース性を促進する。"""
     params = [p for p in model.parameters() if p.requires_grad]
@@ -26,7 +25,6 @@ def _calculate_sparsity_loss(model: nn.Module) -> torch.Tensor:
         start=torch.tensor(0.0, device=device)
     )
     return l1_norm
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 class CombinedLoss(nn.Module):
     """クロスエントロピー損失、スパイク発火率、スパース性の正則化を組み合わせた損失関数。"""
