@@ -1,18 +1,22 @@
 # matsushibadenki/snn2/snn_research/benchmark/tasks.py
 # ベンチマークタスクの定義ファイル
+#
+# 変更点:
+# - mypyエラーを解消するため、型ヒントの修正、ライブラリimportへの# type: ignore追加、
+#   len()呼び出しのキャストなどを行った。
 
 import os
 import json
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Tuple
-from datasets import load_dataset
-from tqdm import tqdm
+from typing import Dict, Any, List, Tuple, Callable, Sized, cast
+from datasets import load_dataset  # type: ignore
+from tqdm import tqdm  # type: ignore
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
-from transformers import PreTrainedTokenizerBase, AutoTokenizer
+from transformers import PreTrainedTokenizerBase
 
-from snn_research.core.snn_core import BreakthroughSNN
+from snn_research.core.snn_core import BreakthroughSNN, AdaptiveLIFNeuron
 from snn_research.benchmark.ann_baseline import ANNBaselineModel
 from snn_research.benchmark.metrics import calculate_accuracy
 
@@ -37,7 +41,7 @@ class BenchmarkTask(ABC):
         pass
 
     @abstractmethod
-    def get_collate_fn(self) -> callable:
+    def get_collate_fn(self) -> Callable:
         """タスク固有のcollate_fnを返す。"""
         pass
 
@@ -47,7 +51,7 @@ class BenchmarkTask(ABC):
         pass
     
     @abstractmethod
-    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, float]:
+    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
         """モデルを評価し、結果を辞書で返す。"""
         pass
 
@@ -67,7 +71,7 @@ class SST2Task(BenchmarkTask):
             
         return _load_split("train"), _load_split("validation")
 
-    def get_collate_fn(self) -> callable:
+    def get_collate_fn(self) -> Callable:
         def collate_fn(batch: List[Dict[str, Any]]):
             texts = [item['text'] for item in batch]
             targets = [item['label'] for item in batch]
@@ -97,15 +101,24 @@ class SST2Task(BenchmarkTask):
 
         if model_type == 'SNN':
             snn_params = {'d_model': 64, 'd_state': 32, 'num_layers': 2, 'time_steps': 64, 'n_head': 2, 'neuron_config': {'type': 'lif'}}
-            backbone = BreakthroughSNN(vocab_size=vocab_size, **snn_params)
+            backbone = BreakthroughSNN(
+                vocab_size=vocab_size,
+                d_model=snn_params['d_model'],
+                d_state=snn_params['d_state'],
+                num_layers=snn_params['num_layers'],
+                time_steps=snn_params['time_steps'],
+                n_head=snn_params['n_head'],
+                neuron_config=snn_params['neuron_config']
+            )
             return SNNClassifier(backbone)
         else:
             ann_params = {'d_model': 64, 'd_hid': 128, 'nlayers': 2, 'nhead': 2}
             return ANNBaselineModel(vocab_size=vocab_size, **ann_params, num_classes=2)
 
-    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, float]:
+    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
         model.eval()
-        true_labels, pred_labels = [], []
+        true_labels: List[int] = []
+        pred_labels: List[int] = []
         total_spikes = 0
         
         with torch.no_grad():
@@ -121,9 +134,10 @@ class SST2Task(BenchmarkTask):
                 pred_labels.extend(preds.cpu().numpy())
                 true_labels.extend(targets.cpu().numpy())
         
+        avg_spikes = total_spikes / len(cast(Sized, loader.dataset)) if total_spikes > 0 else 0.0
         return {
             "accuracy": calculate_accuracy(true_labels, pred_labels),
-            "avg_spikes": total_spikes / len(loader.dataset) if total_spikes > 0 else 0.0
+            "avg_spikes": avg_spikes
         }
 
 # --- 文章要約タスク (XSum) ---
@@ -137,7 +151,7 @@ class XSumTask(BenchmarkTask):
         data = [{"document": ex['document'], "summary": ex['summary']} for ex in dataset]
         return GenericDataset(data), GenericDataset(data) # Train/Valに同じデータを使用
 
-    def get_collate_fn(self) -> callable:
+    def get_collate_fn(self) -> Callable:
         def collate_fn(batch: List[Dict[str, Any]]):
             inputs = [item['document'] for item in batch]
             targets = [item['summary'] for item in batch]
@@ -157,13 +171,21 @@ class XSumTask(BenchmarkTask):
         # 生成タスクなので、ベースモデルをそのまま使用
         if model_type == 'SNN':
             snn_params = {'d_model': 64, 'd_state': 32, 'num_layers': 2, 'time_steps': 256, 'n_head': 2, 'neuron_config': {'type': 'lif'}}
-            return BreakthroughSNN(vocab_size=vocab_size, **snn_params)
+            return BreakthroughSNN(
+                vocab_size=vocab_size,
+                d_model=snn_params['d_model'],
+                d_state=snn_params['d_state'],
+                num_layers=snn_params['num_layers'],
+                time_steps=snn_params['time_steps'],
+                n_head=snn_params['n_head'],
+                neuron_config=snn_params['neuron_config']
+            )
         else:
             # ANNのベースラインも生成モデルである必要がある (ここではダミーとして分類器を流用)
             ann_params = {'d_model': 64, 'd_hid': 128, 'nlayers': 2, 'nhead': 2}
             return ANNBaselineModel(vocab_size=vocab_size, **ann_params, num_classes=vocab_size)
 
-    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, float]:
+    def evaluate(self, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
         model.eval()
         # ROUGEスコアの代わりに、生成されたテキストの平均長を簡易的なメトリクスとする
         total_gen_len = 0
@@ -178,4 +200,5 @@ class XSumTask(BenchmarkTask):
                 
                 total_gen_len += generated_ids.shape[1]
                 
-        return {"avg_summary_length": total_gen_len / len(loader.dataset)}
+        return {"avg_summary_length": total_gen_len / len(cast(Sized, loader.dataset))}
+
