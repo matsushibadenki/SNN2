@@ -4,6 +4,7 @@
 # 変更点:
 # - mypyエラーを解消するため、型ヒントの修正、ライブラリimportへの# type: ignore追加、
 #   len()呼び出しのキャストなどを行った。
+# - BreakthroughSNNの呼び出しを修正し、型推論エラーを解消。
 
 import os
 import json
@@ -100,15 +101,14 @@ class SST2Task(BenchmarkTask):
                 return self.classifier(pooled_output), spikes
 
         if model_type == 'SNN':
-            snn_params = {'d_model': 64, 'd_state': 32, 'num_layers': 2, 'time_steps': 64, 'n_head': 2, 'neuron_config': {'type': 'lif'}}
             backbone = BreakthroughSNN(
                 vocab_size=vocab_size,
-                d_model=snn_params['d_model'],
-                d_state=snn_params['d_state'],
-                num_layers=snn_params['num_layers'],
-                time_steps=snn_params['time_steps'],
-                n_head=snn_params['n_head'],
-                neuron_config=snn_params['neuron_config']
+                d_model=64,
+                d_state=32,
+                num_layers=2,
+                time_steps=64,
+                n_head=2,
+                neuron_config={'type': 'lif'}
             )
             return SNNClassifier(backbone)
         else:
@@ -170,15 +170,14 @@ class XSumTask(BenchmarkTask):
     def build_model(self, model_type: str, vocab_size: int) -> nn.Module:
         # 生成タスクなので、ベースモデルをそのまま使用
         if model_type == 'SNN':
-            snn_params = {'d_model': 64, 'd_state': 32, 'num_layers': 2, 'time_steps': 256, 'n_head': 2, 'neuron_config': {'type': 'lif'}}
             return BreakthroughSNN(
                 vocab_size=vocab_size,
-                d_model=snn_params['d_model'],
-                d_state=snn_params['d_state'],
-                num_layers=snn_params['num_layers'],
-                time_steps=snn_params['time_steps'],
-                n_head=snn_params['n_head'],
-                neuron_config=snn_params['neuron_config']
+                d_model=64,
+                d_state=32,
+                num_layers=2,
+                time_steps=256,
+                n_head=2,
+                neuron_config={'type': 'lif'}
             )
         else:
             # ANNのベースラインも生成モデルである必要がある (ここではダミーとして分類器を流用)
