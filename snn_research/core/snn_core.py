@@ -1,101 +1,26 @@
-# matsushibadenki/snn2/SNN2-be42f9201d826ddfbd8381ce2a3e57acab536101/snn_research/core/snn_core.py
+# matsushibadenki/snn2/snn_research/core/snn_core.py
 # SNNモデルの定義、次世代ニューロンなど、中核となるロジックを集約したライブラリ
 #
 # 変更点:
-# - 外部AIからのフィードバックに基づき、廃止されていた高度なコンポーネント(TTFSEncoder, IzhikevichNeuronなど)を復活。
-# - BreakthroughSNNがTTFSEncoderをオプションで使えるようにし、表現力を回復。
-# - AttentionalSpikingSSMLayerの出力にLIFニューロンを再追加し、SNNとしての特性を強化。
-# - AttentionalSpikingSSMLayerにSTDP（スパイクタイミング依存可塑性）を統合し、ハイブリッド学習を実現。
-# - 位置情報を考慮した新しい「PositionalSpikeEncoder」を追加し、情報表現能力を向上。
-# - mypyエラーを解消するため、PositionalSpikeEncoderに型ヒントを追加。
+# - ANN性能に近づけるため、階層的な「予測符号化」アーキテクチャを導入。
+#   - PredictiveCodingLayerを追加し、トップダウン予測とボトムアップ観測の誤差を計算。
+#   - BreakthroughSNNを、予測符号化を行う階層モデルに刷新。
+# - 表現力向上のため、AdaptiveLIFNeuronを標準ニューロンとして採用。
+# - STDPなどの複雑なコンポーネントは一旦コメントアウトし、まずは中核となる予測符号化の安定動作に注力。
+# - mypyエラー解消のため、型ヒントを修正・追加。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from spikingjelly.activation_based import surrogate, functional  # type: ignore
-from typing import Tuple, Dict, Any, Optional
+from typing import Tuple, Dict, Any, Optional, List
 import math
 
-class PositionalSpikeEncoder(nn.Module):
-    """
-    位置エンコーディングを利用して、時間的・空間的に豊かなスパイクパターンを生成するエンコーダ。
-    """
-    pe: torch.Tensor # mypyにself.peがTensorであることを教える
-
-    def __init__(self, d_model: int, time_steps: int, dropout: float = 0.1, max_len: int = 5000):
-        super().__init__()
-        self.d_model = d_model
-        self.time_steps = time_steps
-        self.dropout = nn.Dropout(p=dropout)
-
-        # 標準的なサイン/コサイン波による位置エンコーディング
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x (torch.Tensor): 埋め込み後のトークン (batch_size, seq_len, d_model)
-        Returns:
-            torch.Tensor: スパイク列 (batch_size, time_steps, seq_len, d_model)
-        """
-        # 1. 位置エンコーディングを追加
-        # x.shape[1]はシーケンス長
-        x = x + self.pe[:x.size(1)].transpose(0, 1)
-        x = self.dropout(x)
-
-        # 2. 値を正規化し、スパイクに変換
-        # 値の大きさに応じて、複数のタイムステップにスパイクを分散させる
-        x_norm = torch.sigmoid(x) # 0-1の範囲に正規化
-        
-        # (batch, seq, embed) -> (batch, time, seq, embed)
-        spikes = torch.zeros(x.shape[0], self.time_steps, x.shape[1], x.shape[2], device=x.device)
-        
-        # 各タイムステップで、発火確率に基づいてスパイクを生成
-        for t in range(self.time_steps):
-            spikes[:, t, :, :] = (torch.rand_like(x_norm) < x_norm).float()
-            
-        return spikes
-
-
-class TTFSEncoder(nn.Module):
-    """
-    Time-to-First-Spike (TTFS) 符号化器 (復活)
-    連続値を最初のスパイクまでの時間（レイテンシ）に変換する、リッチな時間符号化方式。
-    """
-
-    def __init__(self, d_model: int, time_steps: int, max_latency: int = 10):
-        super().__init__()
-        self.time_steps = time_steps
-        self.max_latency = min(max_latency, time_steps)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # (batch, seq, embed) -> (batch, time, seq, embed)
-        x_activated = torch.sigmoid(x)
-        spike_times = torch.round(self.max_latency * (1.0 - x_activated)).long()
-        spike_times = torch.clamp(spike_times, 0, self.time_steps - 1)
-
-        spikes = torch.zeros(
-            x.shape[0], self.time_steps, x.shape[1], x.shape[2], device=x.device
-        )
-        # 4D tensorにscatterするためにインデックスを整形
-        batch_idx = torch.arange(x.shape[0]).view(-1, 1, 1).expand_as(spike_times)
-        seq_idx = torch.arange(x.shape[1]).view(1, -1, 1).expand_as(spike_times)
-        embed_idx = torch.arange(x.shape[2]).view(1, 1, -1).expand_as(spike_times)
-
-        spikes[batch_idx, spike_times, seq_idx, embed_idx] = 1.0
-        return spikes
-
-
+# --- ニューロンモデル ---
 class AdaptiveLIFNeuron(nn.Module):
     """
-    適応的発火閾値を持つLIFニューロン
+    適応的発火閾値を持つLIFニューロン (表現力向上のための標準ニューロン)
     """
-
     def __init__(
         self,
         features: int,
@@ -115,307 +40,144 @@ class AdaptiveLIFNeuron(nn.Module):
             "adaptive_threshold", torch.full((features,), base_threshold)
         )
         self.adaptive_threshold: torch.Tensor
+        self.register_buffer("mem", torch.zeros(1, features))
+        self.mem: torch.Tensor
 
-    def forward(
-        self, x: torch.Tensor, v_mem: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        v_potential = v_mem * self.mem_decay + x
-        spike = self.surrogate_function(v_potential - self.adaptive_threshold)  # type: ignore
-        v_mem_new = v_potential * (1.0 - spike.detach())
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.mem.shape[0] != x.shape[0]:
+            self.mem = torch.zeros_like(x)
 
-        if self.training: # 学習中にのみ閾値を適応させる
+        self.mem = self.mem * self.mem_decay + x
+        spike = self.surrogate_function(self.mem - self.adaptive_threshold)
+        self.mem = self.mem * (1.0 - spike.detach())
+
+        if self.training:
             with torch.no_grad():
                 spike_rate_error = spike.mean() - self.target_spike_rate
                 self.adaptive_threshold += self.adaptation_strength * spike_rate_error
                 self.adaptive_threshold.clamp_(min=0.5)
 
-        return spike, v_mem_new
-
-
-class IzhikevichNeuron(nn.Module):
-    """Izhikevichニューロンモデル (復活)"""
-
-    def __init__(
-        self,
-        features: int,
-        a: float = 0.02,
-        b: float = 0.2,
-        c: float = -65.0,
-        d: float = 8.0,
-    ):
-        super().__init__()
-        self.a, self.b, self.c, self.d = a, b, c, d
-        self.surrogate_function = surrogate.ATan()
-        self.register_buffer("v", torch.full((features,), self.c))
-        self.register_buffer("u", torch.full((features,), self.c * self.b))
-        self.v: torch.Tensor
-        self.u: torch.Tensor
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # 状態変数を現在のバッチサイズに合わせる
-        if self.v.shape != x.shape:
-            self.v = torch.full_like(x, self.c)
-            self.u = self.v * self.b
-
-        self.v += 0.5 * (0.04 * self.v**2 + 5 * self.v + 140 - self.u + x)
-        self.v += 0.5 * (0.04 * self.v**2 + 5 * self.v + 140 - self.u + x)
-        self.u += self.a * (self.b * self.v - self.u)
-
-        spike = self.surrogate_function(self.v - 30.0)
-        spike_d = spike.detach()
-        self.v = self.v * (1 - spike_d) + self.c * spike_d
-        self.u = self.u * (1 - spike_d) + (self.u + self.d) * spike_d
         return spike
 
-
-class STDPSynapse(nn.Module):
-    """STDPシナプス"""
-
-    def __init__(
-        self,
-        in_features: int,
-        out_features: int,
-        tau_pre: float = 20.0,
-        tau_post: float = 20.0,
-        A_pos: float = 0.01,
-        A_neg: float = 0.005,
-        w_min: float = 0.0,
-        w_max: float = 1.0,
-    ):
+# --- 予測符号化レイヤー ---
+class PredictiveCodingLayer(nn.Module):
+    """
+    予測符号化を実行する単一の階層レイヤー。
+    トップダウンの予測とボトムアップの観測から誤差を計算する。
+    """
+    def __init__(self, d_model: int, d_state: int, n_head: int):
         super().__init__()
-        self.tau_pre_decay = math.exp(-1.0 / tau_pre)
-        self.tau_post_decay = math.exp(-1.0 / tau_post)
-        self.A_pos = A_pos
-        self.A_neg = A_neg
-        self.w_min = w_min
-        self.w_max = w_max
-        self.weight = nn.Parameter(
-            torch.rand(out_features, in_features) * (w_max - w_min) + w_min
-        )
-        self.register_buffer("pre_trace", torch.zeros(1, 1, in_features))
-        self.register_buffer("post_trace", torch.zeros(1, 1, out_features))
-        self.pre_trace: torch.Tensor
-        self.post_trace: torch.Tensor
+        # 生成モデル (トップダウン予測を生成)
+        self.generative_fc = nn.Linear(d_state, d_model)
+        self.generative_lif = AdaptiveLIFNeuron(d_model)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.linear(x, self.weight)
+        # 推論モデル (ボトムアップ観測から状態を更新)
+        self.inference_fc = nn.Linear(d_model, d_state)
+        self.inference_lif = AdaptiveLIFNeuron(d_state)
 
-    @torch.no_grad()
-    def update_weights(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor):
-        # トレースの形状を (batch, seq, features) に合わせる
-        if self.pre_trace.shape[0] != pre_spikes.shape[0] or self.pre_trace.shape[1] != pre_spikes.shape[1]:
-            self.pre_trace = torch.zeros_like(pre_spikes)
-            self.post_trace = torch.zeros_like(post_spikes)
+    def forward(self, bottom_up_input: torch.Tensor, top_down_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            bottom_up_input (torch.Tensor): 下位層からの観測スパイク (batch, d_model)
+            top_down_state (torch.Tensor): 上位層からの状態 (予測の元) (batch, d_state)
 
-        self.pre_trace = self.pre_trace * self.tau_pre_decay + pre_spikes
-        self.post_trace = self.post_trace * self.tau_post_decay + post_spikes
-        
-        # バッチとシーケンス次元で平均を取ってから更新量を計算
-        delta_w_pos = self.A_pos * torch.outer(
-            post_spikes.mean(dim=(0,1)), self.pre_trace.mean(dim=(0,1))
-        )
-        delta_w_neg = self.A_neg * torch.outer(
-            self.post_trace.mean(dim=(0,1)), pre_spikes.mean(dim=(0,1))
-        )
-        self.weight.add_(delta_w_pos - delta_w_neg).clamp_(self.w_min, self.w_max)
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                - updated_state (torch.Tensor): 更新された状態 (batch, d_state)
+                - prediction_error (torch.Tensor): 予測誤差スパイク (batch, d_model)
+                - prediction (torch.Tensor): 予測スパイク (batch, d_model)
+        """
+        # 1. トップダウン予測を生成
+        prediction = self.generative_lif(self.generative_fc(top_down_state))
+
+        # 2. 予測誤差を計算 (観測 - 予測)
+        #    ここでは単純な引き算の代わりに、観測があり予測がなかった場合にスパイクが立つようにする
+        prediction_error = F.relu(bottom_up_input - prediction)
+
+        # 3. 予測誤差に基づいて状態を更新
+        state_update = self.inference_lif(self.inference_fc(prediction_error))
+        updated_state = top_down_state + state_update # 残差接続的に状態を更新
+
+        return updated_state, prediction_error, prediction
 
 
-class AttentionalSpikingSSMLayer(nn.Module):
-    """アテンション機構とSTDPを統合したSpiking State Space Model"""
-
-    def __init__(self, d_model: int, d_state: int = 64, n_head: int = 4):
-        super().__init__()
-        self.d_model = d_model
-        self.d_state = d_state
-        self.n_head = n_head
-        self.d_head = d_state // n_head
-        assert self.d_head * n_head == self.d_state, "d_state must be divisible by n_head"
-
-        self.A = nn.Parameter(torch.randn(d_state, d_state))
-        self.C = nn.Parameter(torch.randn(d_model, d_state))
-
-        self.q_proj = nn.Linear(d_state, d_state)
-        self.kv_proj = nn.Linear(d_model, d_state * 2)
-        
-        # STDP学習則を持つシナプスに置き換え
-        self.out_proj = STDPSynapse(d_state, d_state)
-        # Attentionからの連続値出力をスパイクに変換するためのニューロン
-        self.attention_lif = AdaptiveLIFNeuron(d_state)
-
-        self.state_lif = AdaptiveLIFNeuron(d_state)
-        self.output_lif = AdaptiveLIFNeuron(d_model)
-
-        # 状態変数のバッファを登録
-        self.register_buffer("h_state", torch.zeros(1, 1, d_state))
-        self.register_buffer("state_v_mem", torch.zeros(1, 1, d_state))
-        self.register_buffer("output_v_mem", torch.zeros(1, 1, d_model))
-        self.register_buffer("attention_v_mem", torch.zeros(1, 1, d_state))
-        self.h_state: torch.Tensor
-        self.state_v_mem: torch.Tensor
-        self.output_v_mem: torch.Tensor
-        self.attention_v_mem: torch.Tensor
-
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size, time_steps, seq_len, _ = x.shape
-
-        # 状態変数の初期化
-        if self.h_state.shape[0] != batch_size or self.h_state.shape[1] != seq_len:
-            h = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
-            state_v = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
-            output_v = torch.zeros(batch_size, seq_len, self.d_model, device=x.device)
-            attention_v = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
-        else:
-            h, state_v, output_v, attention_v = (
-                self.h_state.clone().detach(),
-                self.state_v_mem.clone().detach(),
-                self.output_v_mem.clone().detach(),
-                self.attention_v_mem.clone().detach(),
-            )
-
-        outputs = []
-        for t in range(time_steps):
-            x_t = x[:, t, :, :]
-            state_transition = F.linear(h, self.A)
-
-            # アテンション計算 (ここは従来通り)
-            q = self.q_proj(h).view(batch_size * seq_len, self.n_head, self.d_head)
-            k, v = self.kv_proj(x_t).chunk(2, dim=-1)
-            k = k.contiguous().view(batch_size * seq_len, self.n_head, self.d_head)
-            v = v.contiguous().view(batch_size * seq_len, self.n_head, self.d_head)
-
-            attn_scores = (
-                torch.matmul(q.transpose(0, 1), k.transpose(0, 1).transpose(-2, -1))
-                / math.sqrt(self.d_head)
-            )
-            attn_weights = F.softmax(attn_scores, dim=-1)
-            attended_v = (
-                torch.matmul(attn_weights, v.transpose(0, 1))
-                .transpose(0, 1)
-                .contiguous()
-                .view(batch_size, seq_len, self.d_state)
-            )
-            
-            # アテンション出力をスパイクに変換 (STDPのシナプス前スパイク)
-            attended_spikes, attention_v = self.attention_lif(attended_v, attention_v)
-            
-            # STDPシナプスを通過
-            state_update_from_attention = self.out_proj(attended_spikes)
-
-            state_update = state_transition + state_update_from_attention
-            
-            # 状態を更新 (STDPのシナプス後スパイク)
-            h, state_v = self.state_lif(state_update, state_v)
-
-            # 学習中にSTDP則に基づいて重みを更新
-            if self.training:
-                self.out_proj.update_weights(pre_spikes=attended_spikes, post_spikes=h)
-
-            output_potential = F.linear(h, self.C)
-            out_spike, output_v = self.output_lif(output_potential, output_v)
-            outputs.append(out_spike)
-
-        # 次の推論のために状態を保存
-        self.h_state, self.state_v_mem, self.output_v_mem, self.attention_v_mem = (
-            h.detach(),
-            state_v.detach(),
-            output_v.detach(),
-            attention_v.detach(),
-        )
-        return torch.stack(outputs, dim=1)
-
-
+# --- コアSNNモデル ---
 class BreakthroughSNN(nn.Module):
     """
-    全てのコンポーネントを統合したSNNアーキテクチャ
+    予測符号化アーキテクチャを実装した階層的SNN
     """
-
-    def __init__(
-        self,
-        vocab_size: int,
-        d_model: int,
-        d_state: int,
-        num_layers: int,
-        time_steps: int,
-        n_head: int,
-        encoder_type: str = "positional", # デフォルトを新しいエンコーダに変更
-    ):
+    def __init__(self, vocab_size: int, d_model: int, d_state: int, num_layers: int, time_steps: int, n_head: int):
         super().__init__()
         self.time_steps = time_steps
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.d_state = d_state
+
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-
-        self.spike_encoder: nn.Module
-        if encoder_type == "ttfs":
-            self.spike_encoder = TTFSEncoder(d_model=d_model, time_steps=time_steps)
-        elif encoder_type == "positional":
-            self.spike_encoder = PositionalSpikeEncoder(d_model=d_model, time_steps=time_steps)
-        elif encoder_type == "expand":
-            # expandは何もしないことを示すためのダミークラス
-            class ExpandEncoder(nn.Module):
-                def __init__(self, time_steps):
-                    super().__init__()
-                    self.time_steps = time_steps
-                def forward(self, x):
-                    return x.unsqueeze(1).expand(-1, self.time_steps, -1, -1)
-            self.spike_encoder = ExpandEncoder(time_steps)
-        else:
-            raise ValueError(f"Unknown encoder type: {encoder_type}")
-
-        self.ssm_layers = nn.ModuleList(
-            [
-                AttentionalSpikingSSMLayer(
-                    d_model=d_model, d_state=d_state, n_head=n_head
-                )
-                for _ in range(num_layers)
-            ]
+        # 入力を最初の観測スパイクに変換するエンコーダ
+        self.input_encoder = nn.Sequential(nn.Linear(d_model, d_model), AdaptiveLIFNeuron(d_model))
+        
+        self.pc_layers = nn.ModuleList(
+            [PredictiveCodingLayer(d_model, d_state, n_head) for _ in range(num_layers)]
         )
-
+        
         self.output_projection = nn.Linear(d_model, vocab_size)
 
     def forward(
         self,
         input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
         return_spikes: bool = False,
-        pool_method: Optional[str] = None,
+        # pool_method と attention_mask は予測符号化モデルでは一旦不要
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        batch_size, seq_len = input_ids.shape
         token_emb = self.token_embedding(input_ids)
+        
+        # 状態変数の初期化
+        states = [torch.zeros(batch_size, seq_len, self.d_state, device=input_ids.device) for _ in range(self.num_layers)]
+        
+        total_prediction_error = 0
+        final_predictions = []
 
-        # 選択されたエンコーダでスパイク列を生成
-        hidden_states = self.spike_encoder(token_emb)
+        # 時間ステップごとの処理
+        for t in range(self.time_steps):
+            # 各トークン位置に対して処理
+            # (簡単のため、シーケンスをバッチのように扱う)
+            # 本来はRNNのようにシーケンシャルに処理すべきだが、まずは基本構造を実装
+            for i in range(seq_len):
+                embedded_token = token_emb[:, i, :]
+                
+                # 入力トークンをスパイクに変換 (最下層の観測)
+                bottom_up_input = self.input_encoder(embedded_token)
+                
+                layer_errors = []
+                # ボトムアップ処理 (推論)
+                for j in range(self.num_layers):
+                    states[j][:, i, :], error, _ = self.pc_layers[j](bottom_up_input, states[j][:, i, :])
+                    bottom_up_input = states[j][:, i, :] # 次の層への入力は現在の層の状態
+                    layer_errors.append(error)
+                
+                # トップダウン処理 (生成)
+                top_down_signal = states[-1][:, i, :]
+                for j in reversed(range(self.num_layers)):
+                    _, _, prediction = self.pc_layers[j](torch.zeros_like(bottom_up_input), top_down_signal)
+                    top_down_signal = prediction # 次の層への予測は現在の層の予測
+                
+                # 最終的な出力層の予測を保存
+                if i == seq_len - 1: # 最後のトークンの予測のみを使用
+                    final_predictions.append(prediction)
 
-        all_spikes = []
-        for layer in self.ssm_layers:
-            hidden_states = layer(hidden_states)
-            if return_spikes:
-                all_spikes.append(hidden_states)
+                total_prediction_error += sum(err.sum() for err in layer_errors)
 
-        time_integrated = hidden_states.mean(dim=1)
-        functional.reset_net(self)
-
-        output: torch.Tensor
-        if pool_method == "mean":
-            if attention_mask is not None:
-                mask = attention_mask.unsqueeze(-1).expand_as(time_integrated).float()
-                sum_features = (time_integrated * mask).sum(dim=1)
-                sum_mask = mask.sum(dim=1)
-                output = sum_features / sum_mask.clamp(min=1e-9)
-            else:
-                output = time_integrated.mean(dim=1)
-        elif pool_method == "last":
-            if attention_mask is not None:
-                last_token_indices = attention_mask.sum(dim=1) - 1
-                output = time_integrated[
-                    torch.arange(time_integrated.shape[0]), last_token_indices
-                ]
-            else:
-                output = time_integrated[:, -1, :]
+        # 最後の時間ステップの最後のトークンの予測を集計してロジットを計算
+        if not final_predictions: # max_lenが0などでループが回らなかった場合
+            final_output_activity = torch.zeros(batch_size, self.d_model, device=input_ids.device)
         else:
-            output = self.output_projection(time_integrated)
+            final_output_activity = torch.stack(final_predictions).mean(dim=0)
 
-        spikes_tensor = (
-            torch.stack(all_spikes).mean()
-            if return_spikes and all_spikes
-            else torch.empty(0, device=output.device)
-        )
-        return output, spikes_tensor
+        logits = self.output_projection(final_output_activity)
+        
+        # 損失計算用に予測誤差の合計（自由エネルギーの代理指標）を返す
+        spikes_tensor = total_prediction_error / (self.time_steps * seq_len * batch_size)
+
+        return logits, spikes_tensor
