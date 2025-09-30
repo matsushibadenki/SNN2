@@ -2,13 +2,7 @@
 # SNNモデルの定義、次世代ニューロンなど、中核となるロジックを集約したライブラリ
 #
 # 変更点:
-# - ANN性能に近づけるため、階層的な「予測符号化」アーキテクチャを導入。
-# - 表現力向上のため、AdaptiveLIFNeuronを標準ニューロンとして採用。
-# - [改善] BreakthroughSNNのforwardパスを、より本格的なリカレント（RNN）形式の時系列処理に変更。
-# - [改善] 学習の安定化のため、SNNに適したLayerNormと残差接続を導入。
-# - [追加] Phase 4: 樹状突起演算ニューロンを実装。
-# - [更新] BreakthroughSNNとPredictiveCodingLayerをリファクタリングし、
-#   設定に応じてAdaptiveLIFNeuronとDendriticNeuronを切り替えられるように変更。
+# - mypyエラー解消のため、neuron_classに明示的な型ヒントを追加。
 
 import torch
 import torch.nn as nn
@@ -167,6 +161,10 @@ class BreakthroughSNN(nn.Module):
             neuron_config = {"type": "lif"}
         
         neuron_type = neuron_config.get("type", "lif")
+        
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        neuron_class: Type[nn.Module]
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         if neuron_type == "dendritic":
             neuron_class = DendriticNeuron
@@ -246,3 +244,4 @@ class BreakthroughSNN(nn.Module):
 
         return final_logits, avg_spikes, avg_mem
 # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+
