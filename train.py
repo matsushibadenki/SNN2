@@ -15,16 +15,15 @@ import argparse
 import os
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, random_split, DistributedSampler
 from dependency_injector.wiring import inject, Provide
 from typing import Optional
 
 from app.containers import TrainingContainer
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 from snn_research.core.snn_core import BreakthroughSNN
 from snn_research.data.datasets import get_dataset_class, DistillationDataset, DataFormat, SNNBaseDataset
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 from snn_research.training.trainers import BreakthroughTrainer, DistillationTrainer
 
 # DIコンテナのセットアップ
@@ -35,7 +34,9 @@ container = TrainingContainer()
 @inject
 def train(
     args,
-    snn_model: BreakthroughSNN = Provide[TrainingContainer.snn_model],
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    snn_model: nn.Module = Provide[TrainingContainer.snn_model],
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     tokenizer = Provide[TrainingContainer.tokenizer],
     config = Provide[TrainingContainer.config]
 ):
@@ -48,31 +49,28 @@ def train(
 
     # --- データセットとデータローダーの準備 ---
     is_distillation = config.training.type() == "distillation"
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     dataset: SNNBaseDataset
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     if is_distillation:
+        # このキャストは、DistillationDatasetがSNNBaseDatasetを継承しているため安全
         dataset = DistillationDataset(
             file_path=os.path.join(args.data_path, "distillation_data.jsonl"),
             data_dir=args.data_path,
             tokenizer=tokenizer,
-            max_seq_len=snn_model.time_steps
+            max_seq_len=config.model.time_steps()
         )
     else:
         DatasetClass = get_dataset_class(DataFormat(config.data.format()))
         dataset = DatasetClass(
             file_path=args.data_path,
             tokenizer=tokenizer,
-            max_seq_len=snn_model.time_steps
+            max_seq_len=config.model.time_steps()
         )
         
     train_size = int((1.0 - config.data.split_ratio()) * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     train_sampler: Optional[DistributedSampler] = DistributedSampler(train_dataset) if is_distributed else None
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.training.batch_size(),
@@ -97,7 +95,6 @@ def train(
     # アストロサイトネットワークを初期化 (オプション)
     astrocyte = container.astrocyte_network(snn_model=snn_model) if args.use_astrocyte else None
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     # トレーナーを選択して初期化
     trainer: BreakthroughTrainer
     if is_distillation:
@@ -108,7 +105,6 @@ def train(
         trainer = container.standard_trainer(
             model=snn_model, optimizer=optimizer, scheduler=scheduler, device=device, rank=rank, astrocyte_network=astrocyte
         )
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     # --- 学習ループの実行 ---
     print(f"🚀 学習を開始します (Device: {device}, Distributed: {is_distributed})")
@@ -117,10 +113,8 @@ def train(
         start_epoch = trainer.load_checkpoint(args.resume_path)
 
     for epoch in range(start_epoch, config.training.epochs()):
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         if train_sampler:
             train_sampler.set_epoch(epoch)
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         train_metrics = trainer.train_epoch(train_loader, epoch)
         
