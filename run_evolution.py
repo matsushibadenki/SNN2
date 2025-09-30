@@ -19,7 +19,7 @@ def main():
         required=True,
         help="エージェントが自己評価の出発点とするタスク。\n例: '文章要約'"
     )
-    # ダミーの初期性能指標
+    # 自己評価の起点となるダミーの初期性能指標
     parser.add_argument(
         "--initial_accuracy", type=float, default=0.75, help="タスクの初期精度"
     )
@@ -29,8 +29,8 @@ def main():
     
     args = parser.parse_args()
 
-    # 自己進化エージェントを初期化
-    agent = SelfEvolvingAgent(project_root=".") # プロジェクトのルートディレクトリを指定
+    # 自己進化エージェントを初期化 (プロジェクトルートを指定)
+    agent = SelfEvolvingAgent(project_root=".")
 
     # ダミーの初期メトリクスを作成
     initial_metrics = {
