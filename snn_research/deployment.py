@@ -11,6 +11,7 @@
 # - `generate` メソッドをストリーミング応答（ジェネレータ）に変更し、逐次的なテキスト生成を可能に。
 # - `stop_sequences` のロジックを改善し、生成テキスト全体に含まれるかをチェックするようにした。
 # - 推論時の総スパイク数を計測し、インスタンス変数 `last_inference_stats` に保存する機能を追加。
+# - [改善] generateメソッドに、Top-KおよびTop-P (Nucleus)サンプリングのデコーディング戦略を追加。
 
 import torch
 import torch.nn as nn
@@ -22,6 +23,7 @@ from typing import Dict, Any, List, Optional, Iterator
 from enum import Enum
 from dataclasses import dataclass
 from transformers import AutoTokenizer
+import torch.nn.functional as F
 
 # --- SNN 推論エンジン ---
 class SNNInferenceEngine:
@@ -54,11 +56,36 @@ class SNNInferenceEngine:
         self.model.eval()
         self.last_inference_stats: Dict[str, Any] = {}
 
-    def generate(self, start_text: str, max_len: int, stop_sequences: Optional[List[str]] = None) -> Iterator[str]:
+    def _sample_next_token(self, logits: torch.Tensor, top_k: int, top_p: float, temperature: float) -> int:
+        """Top-K, Top-Pサンプリングを用いて次のトークンを決定する"""
+        logits = logits / temperature
+
+        if top_k > 0:
+            top_k = min(top_k, logits.size(-1))
+            indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+            logits[indices_to_remove] = -float("Inf")
+
+        if top_p > 0.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+            cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+            
+            sorted_indices_to_remove = cumulative_probs > top_p
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+            sorted_indices_to_remove[..., 0] = 0
+
+            indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+            logits[indices_to_remove] = -float("Inf")
+        
+        probs = F.softmax(logits, dim=-1)
+        next_token_id = torch.multinomial(probs, num_samples=1).item()
+        return next_token_id
+
+    def generate(self, start_text: str, max_len: int, stop_sequences: Optional[List[str]] = None,
+                 top_k: int = 50, top_p: float = 0.95, temperature: float = 0.8) -> Iterator[str]:
         """
         テキストをストリーミング形式で生成します。
         """
-        self.last_inference_stats = {"total_spikes": 0}
+        self.last_inference_stats = {"total_spikes": 0, "total_mem": 0}
 
         bos_token = self.tokenizer.bos_token or ''
         prompt_ids = self.tokenizer.encode(f"{bos_token}{start_text}", return_tensors='pt').to(self.device)
@@ -68,15 +95,14 @@ class SNNInferenceEngine:
         
         with torch.no_grad():
             for _ in range(max_len):
-                # 予測符号化モデルは最後のトークンに対するロジットのみを返す
-                logits, hidden_states = self.model(input_tensor, return_spikes=True)
+                logits, spikes, mem = self.model(input_tensor)
                 
-                if hidden_states.numel() > 0:
-                    self.last_inference_stats["total_spikes"] += hidden_states.sum().item()
+                if spikes.numel() > 0: self.last_inference_stats["total_spikes"] += spikes.sum().item()
+                if mem.numel() > 0: self.last_inference_stats["total_mem"] += mem.abs().sum().item()
                 
-                next_token_logits = logits
-                next_token_id_tensor = torch.argmax(next_token_logits, dim=-1)
-                next_token_id = next_token_id_tensor.item()
+                next_token_logits = logits[:, -1, :]
+                
+                next_token_id = self._sample_next_token(next_token_logits, top_k, top_p, temperature)
                 
                 if next_token_id == self.tokenizer.eos_token_id:
                     break
@@ -89,7 +115,7 @@ class SNNInferenceEngine:
                     if any(stop_seq in generated_text for stop_seq in stop_sequences):
                         break
                     
-                input_tensor = torch.cat([input_tensor, next_token_id_tensor.unsqueeze(0).unsqueeze(0)], dim=1)
+                input_tensor = torch.cat([input_tensor, torch.tensor([[next_token_id]], device=self.device)], dim=1)
 
 
 # --- ニューロモーフィック デプロイメント機能 ---
@@ -115,7 +141,7 @@ class AdaptiveQuantizationPruning:
         for module in model.modules():
             if isinstance(module, nn.Linear):
                 prune.l1_unstructured(module, name="weight", amount=pruning_ratio)
-                prune.remove(module, 'weight') # プルーニングを恒久的にする
+                prune.remove(module, 'weight')
     
     def apply_quantization(self, model: nn.Module, bits: int) -> nn.Module:
         """
@@ -123,7 +149,6 @@ class AdaptiveQuantizationPruning:
         """
         if bits >= 32: return model
         print(f"Applying dynamic quantization to {bits}-bit...")
-        # CPUでの実行を想定
         model_to_quantize = copy.deepcopy(model).cpu()
         quantized_model = torch.quantization.quantize_dynamic(
             model_to_quantize, {nn.Linear}, dtype=torch.qint8
