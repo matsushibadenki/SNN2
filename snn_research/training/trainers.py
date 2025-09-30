@@ -8,6 +8,7 @@
 # - 検証結果に基づき、最も性能の良いモデルを `best_model.pth` として保存する機能を追加。
 # - チェックポイントの保存・読み込みロジックを修正し、バッファを除外して再開時のサイズミスマッチエラーを解消。
 # - 損失関数にモデル全体を渡し、スパース性などのハードウェアを意識した正則化を可能に。
+# - [改善] BreakthroughSNNのアーキテクチャ変更に対応し、シーケンス全体の損失を計算するように_run_stepを修正。
 
 import torch
 import torch.nn as nn
@@ -52,8 +53,8 @@ class BreakthroughTrainer:
         
         with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
             with torch.set_grad_enabled(is_train):
-                logits, spike_data = self.model(input_ids, return_spikes=True)
-                loss_dict = self.criterion(logits, target_ids, spike_data, self.model)
+                logits, spikes, mem = self.model(input_ids)
+                loss_dict = self.criterion(logits, target_ids, spikes, mem, self.model)
         
         if is_train:
             self.optimizer.zero_grad()
@@ -85,9 +86,12 @@ class BreakthroughTrainer:
         num_batches = len(dataloader)
         progress_bar = tqdm(dataloader, desc=f"Training Epoch {epoch}", disable=(self.rank not in [-1, 0]))
         
+        self.model.train()
         for batch in progress_bar:
             metrics = self._run_step(batch, is_train=True)
             for key, value in metrics.items(): total_metrics[key] += value
+            progress_bar.set_postfix({k: v / (progress_bar.n + 1) for k, v in total_metrics.items()})
+
 
         if self.scheduler: self.scheduler.step()
         
@@ -106,6 +110,7 @@ class BreakthroughTrainer:
         num_batches = len(dataloader)
         progress_bar = tqdm(dataloader, desc=f"Evaluating Epoch {epoch}", disable=(self.rank not in [-1, 0]))
         
+        self.model.eval()
         with torch.no_grad():
             for batch in progress_bar:
                 metrics = self._run_step(batch, is_train=False)
@@ -124,7 +129,8 @@ class BreakthroughTrainer:
         if self.rank in [-1, 0]:
             model_to_save = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
             
-            buffer_names = {name for name, _ in model_to_save.named_buffers()}
+            # 状態を持たないニューロンのバッファ（memなど）は保存しない
+            buffer_names = {name for name, _ in model_to_save.named_buffers() if 'mem' not in name and 'adaptive_threshold' not in name}
             model_state = {k: v for k, v in model_to_save.state_dict().items() if k not in buffer_names}
 
             state = {
@@ -147,6 +153,7 @@ class BreakthroughTrainer:
                 self.best_metric = metric_value
                 best_path = os.path.join(os.path.dirname(path), 'best_model.pth')
                 
+                # ベストモデルには、推論に必要な情報のみを保存
                 temp_state_for_best = {'model_state_dict': model_state}
                 temp_state_for_best.update(kwargs)
                 torch.save(temp_state_for_best, best_path)
@@ -162,15 +169,8 @@ class BreakthroughTrainer:
         
         model_to_load = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
         
-        checkpoint_state_dict = checkpoint['model_state_dict']
-        model_buffer_names = {name for name, _ in model_to_load.named_buffers()}
-        keys_to_remove = [k for k in checkpoint_state_dict if k in model_buffer_names]
-        if keys_to_remove:
-            print(f"古いチェックポイントからバッファキーを削除します: {keys_to_remove}")
-            for k in keys_to_remove:
-                del checkpoint_state_dict[k]
-
-        model_to_load.load_state_dict(checkpoint_state_dict, strict=False)
+        # strict=Falseで、バッファなどの不一致を許容
+        model_to_load.load_state_dict(checkpoint['model_state_dict'], strict=False)
         
         if 'optimizer_state_dict' in checkpoint:
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -188,7 +188,7 @@ class BreakthroughTrainer:
 
 
 class DistillationTrainer(BreakthroughTrainer):
-    """知識蒸留に特化したトレーナー（モニタリング・評価機能完備）。"""
+    """知識蒸留に特化したトレーナー（予測符号化モデル対応）。"""
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
         if is_train: self.model.train()
         else: self.model.eval()
@@ -197,30 +197,24 @@ class DistillationTrainer(BreakthroughTrainer):
 
         with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
             with torch.set_grad_enabled(is_train):
-                student_logits, spike_data = self.model(student_input, return_spikes=True)
+                student_logits, spikes, mem = self.model(student_input)
+                
                 assert isinstance(self.criterion, DistillationLoss)
                 loss_dict = self.criterion(
                     student_logits=student_logits,
                     teacher_logits=teacher_logits,
                     targets=student_target,
-                    spikes=spike_data,
+                    spikes=spikes,
+                    mem=mem,
                     model=self.model
                 )
-
         
         if is_train:
             self.optimizer.zero_grad()
-            if self.use_amp:
-                self.scaler.scale(loss_dict['total']).backward()
-                if self.grad_clip_norm > 0:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                loss_dict['total'].backward()
-                if self.grad_clip_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
-                self.optimizer.step()
+            self.scaler.scale(loss_dict['total']).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
         
         return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
