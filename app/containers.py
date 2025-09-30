@@ -101,6 +101,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         CombinedLoss,
         ce_weight=config.training.loss.ce_weight,
         spike_reg_weight=config.training.loss.spike_reg_weight,
+        sparsity_reg_weight=config.training.loss.sparsity_reg_weight,
         tokenizer=tokenizer,
     )
     distillation_loss = providers.Factory(
@@ -108,6 +109,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         ce_weight=config.training.distillation.loss.ce_weight,
         distill_weight=config.training.distillation.loss.distill_weight,
         spike_reg_weight=config.training.distillation.loss.spike_reg_weight,
+        sparsity_reg_weight=config.training.distillation.loss.sparsity_reg_weight,
         temperature=config.training.distillation.loss.temperature,
         tokenizer=tokenizer,
     )
