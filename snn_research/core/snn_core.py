@@ -11,6 +11,7 @@
 # - [改善] BreakthroughSNNのforwardパスを、より本格的なリカレント（RNN）形式の時系列処理に変更。
 # - [改善] 学習の安定化のため、SNNに適したLayerNormと残差接続を導入。
 # - [修正] mypyエラー解消のため、forwardメソッドの戻り値の型ヒントと実際の値をTensorに統一。
+# - [追加] Phase 4: 樹状突起演算ニューロンを実装。
 
 import torch
 import torch.nn as nn
@@ -61,6 +62,44 @@ class AdaptiveLIFNeuron(nn.Module):
                 self.adaptive_threshold.clamp_(min=0.5)
 
         return spike, self.mem
+
+class DendriticNeuron(nn.Module):
+    """
+    Phase 4: 樹状突起演算を模倣したニューロン。
+    複数の分岐（dendritic branches）を持ち、それぞれが異なる時空間パターンを学習する。
+    """
+    def __init__(self, input_features: int, num_branches: int, branch_features: int):
+        super().__init__()
+        self.num_branches = num_branches
+        # 各分岐は独立した線形変換とLIFニューロンを持つ
+        self.branches = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(input_features, branch_features),
+                AdaptiveLIFNeuron(branch_features)
+            ) for _ in range(num_branches)
+        ])
+        # Soma (細胞体): 各分岐からの出力を統合する
+        self.soma_lif = AdaptiveLIFNeuron(branch_features * num_branches)
+        self.output_projection = nn.Linear(branch_features * num_branches, input_features)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        branch_outputs = []
+        for branch in self.branches:
+            # 各ブランチは同じ入力を受け取る
+            branch_spike, _ = branch(x)
+            branch_outputs.append(branch_spike)
+        
+        # 全ての分岐からの出力を結合
+        concatenated_spikes = torch.cat(branch_outputs, dim=-1)
+        
+        # 細胞体で統合し、最終的な出力を生成
+        soma_spike, soma_mem = self.soma_lif(concatenated_spikes)
+        
+        # 出力スパイクを元の次元に射影
+        output = self.output_projection(soma_spike)
+        
+        return output, soma_mem
+
 
 class SNNLayerNorm(nn.Module):
     """SNNのためのタイムステップごとに行うLayerNorm"""
@@ -168,13 +207,14 @@ class BreakthroughSNN(nn.Module):
             logits = self.output_projection(top_down_signal)
             all_logits.append(logits)
 
-            total_spikes += sum(err.mean() for err in layer_errors)
-            total_mem_potential += sum(m.abs().mean() for m in layer_mems)
+            if return_spikes:
+                total_spikes += sum(err.mean() for err in layer_errors)
+                total_mem_potential += sum(m.abs().mean() for m in layer_mems)
 
         # (batch_size, seq_len, vocab_size) の形状にスタック
         final_logits = torch.stack(all_logits, dim=1)
         
-        avg_spikes = total_spikes / seq_len
-        avg_mem = total_mem_potential / seq_len
+        avg_spikes = total_spikes / seq_len if return_spikes else torch.tensor(0.0)
+        avg_mem = total_mem_potential / seq_len if return_spikes else torch.tensor(0.0)
 
         return final_logits, avg_spikes, avg_mem
