@@ -1,12 +1,16 @@
 # matsushibadenki/snn/scripts/run_benchmark.py
 # 複数のタスクを実行可能な、新しいベンチマークスイート
+#
+# 変更点:
+# - mypyエラーを解消するため、型ヒントの修正と、結果を格納する辞書の扱いを変更。
 
 import argparse
 import time
-import pandas as pd
+import pandas as pd  # type: ignore
 import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
+from typing import Dict, Any
 
 from snn_research.benchmark.tasks import SST2Task, XSumTask
 
@@ -27,7 +31,7 @@ def run_single_task(task_name: str, device: str):
     TaskClass = TASK_REGISTRY[task_name]
     task = TaskClass(tokenizer, device)
 
-    _, val_dataset = task.prepare_data()
+    _, val_dataset = task.prepare_data(data_dir="data")
     val_loader = DataLoader(val_dataset, batch_size=16, collate_fn=task.get_collate_fn())
     
     results = []
@@ -39,11 +43,15 @@ def run_single_task(task_name: str, device: str):
         metrics = task.evaluate(model, val_loader)
         duration = time.time() - start_time
         
-        metrics['model'] = model_type
-        metrics['task'] = task_name
-        metrics['eval_time_sec'] = duration
-        results.append(metrics)
-        print(f"  - Results: {metrics}")
+        result_record: Dict[str, Any] = {
+            "model": model_type,
+            "task": task_name,
+            "eval_time_sec": duration,
+        }
+        result_record.update(metrics)
+        
+        results.append(result_record)
+        print(f"  - Results: {result_record}")
     
     return results
 
@@ -74,3 +82,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
