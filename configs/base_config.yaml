@@ -1,58 +1,72 @@
-# matsushibadenki/snn/configs/base_config.yaml
+# matsushibadenki/snn2/configs/base_config.yaml
 # プロジェクトの基本設定ファイル
 
 # 共通設定
 seed: 42
-device: "auto" # 実行環境に応じて最適なデバイス (cuda, mps, cpu) を自動選択
+device: "auto"
 
 # データ設定
 data:
-  path: "data/wikitext-103_train.jsonl"
+  path: "data/sample_data.jsonl" # シンプルなタスクのためサンプルデータに変更
   format: "simple_text"
-  split_ratio: 0.1 # 検証用データの割合
+  split_ratio: 0.1
   max_vocab_size: 50000
   tokenizer_name: "gpt2"
 
 # 学習パラメータ設定
 training:
-  type: "standard"
+  # paradigm: "gradient_based" または "biologically_plausible" を選択
+  paradigm: "biologically_plausible"
   epochs: 10
   batch_size: 8
-  learning_rate: 0.0005
-  use_scheduler: true
-  grad_clip_norm: 1.0
-  warmup_epochs: 1
-  use_amp: true
   
-  # ログと評価の設定
-  log_dir: "runs/snn_experiment" # TensorBoardのログ出力先
-  eval_interval: 1 # 何エポックごとに検証を実行するか
-  log_interval: 1 # 何エポックごとにチェックポイントを保存するか
-
-  # 損失関数の重み
-  loss:
-    ce_weight: 1.0
-    spike_reg_weight: 0.01
-    sparsity_reg_weight: 0.00001 # スパース性を促進する正則化項の重み
-    mem_reg_weight: 0.00001 # 膜電位の正則化項の重み
-
-  # 蒸留学習設定
-  distillation:
-    teacher_model: "gpt2"
+  # --- 勾配ベース学習 (gradient_based) の設定 ---
+  gradient_based:
+    type: "standard"
+    learning_rate: 0.0005
+    use_scheduler: true
+    grad_clip_norm: 1.0
+    warmup_epochs: 1
+    use_amp: true
     loss:
-      ce_weight: 0.3
-      distill_weight: 0.7
+      ce_weight: 1.0
       spike_reg_weight: 0.01
       sparsity_reg_weight: 0.00001
       mem_reg_weight: 0.00001
-      temperature: 2.0
+    distillation:
+      teacher_model: "gpt2"
+      loss:
+        ce_weight: 0.3
+        distill_weight: 0.7
+        spike_reg_weight: 0.01
+        sparsity_reg_weight: 0.00001
+        mem_reg_weight: 0.00001
+        temperature: 2.0
 
-# 推論/アプリ設定
-inference:
-  device: "auto" # 推論デバイスも自動選択
-  max_len: 50
+  # --- 生物学的学習 (biologically_plausible) の設定 ---
+  biologically_plausible:
+    # learning_rule: "STDP" または "REWARD_MODULATED_STDP" を選択
+    learning_rule: "REWARD_MODULATED_STDP"
+    # ニューロンモデル (LIF)
+    neuron:
+      tau_mem: 10.0
+      v_threshold: 1.0
+      v_reset: 0.0
+      v_rest: 0.0
+    # STDP
+    stdp:
+      tau_trace: 20.0
+      learning_rate: 0.005
+      a_plus: 1.0
+      a_minus: 1.0
+    # 報酬変調STDP
+    reward_modulated_stdp:
+      tau_eligibility: 100.0
+      learning_rate: 0.01
 
-# Gradioアプリ設定
-app:
-  server_name: "0.0.0.0"
-  server_port: 7860
+  # ログと評価の設定
+  log_dir: "runs/snn_experiment"
+  eval_interval: 1
+  log_interval: 1
+
+# (以降の inference, app 設定は省略)
