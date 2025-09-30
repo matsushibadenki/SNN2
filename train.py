@@ -1,177 +1,230 @@
-# matsushibadenki/snn/train.py
-# DIコンテナを利用した、統合学習実行スクリプト (torchrun対応版)
-#
-# 変更点:
-# - 外部からDIコンテナの設定を上書きするための --override_config 引数を追加。
-# - Metal (mps) デバイスの可用性チェックをより堅牢にした。
-# - チェックポイントをロードして学習を再開する機能を追加。
+# matsushibadenki/snn/snn_research/training/trainers.py
+# SNNモデルの学習と評価ループを管理するTrainerクラス (モニタリング・評価機能完備)
+# 
+# 機能:
+# - Metal (mps) デバイスに対応。
+# - TensorBoardと連携し、学習・検証のメトリクスをリアルタイムで可視化。
+# - 検証データセットでモデル性能を評価する `evaluate` メソッドを実装。
+# - 検証結果に基づき、最も性能の良いモデルを `best_model.pth` として保存する機能を追加。
+# - チェックポイントの保存・読み込みロジックを修正し、バッファを除外して再開時のサイズミスマッチエラーを解消。
+# - 損失関数にモデル全体を渡し、スパース性などのハードウェアを意識した正則化を可能に。
 
-import os
-import argparse
 import torch
-import torch.distributed as dist
-from torch.utils.data import DataLoader, random_split
-from torch.utils.data.distributed import DistributedSampler
-from torch.nn.utils.rnn import pad_sequence
-from torch.nn.parallel import DistributedDataParallel as DDP
-from functools import partial
-from typing import List, Tuple
+import torch.nn as nn
+from torch.utils.data import DataLoader
+import os
+import collections
+from tqdm import tqdm  # type: ignore
+from typing import Tuple, Dict, Any, Optional
+import shutil
 
-from app.containers import TrainingContainer
-from snn_research.data.datasets import DataFormat, get_dataset_class, DistillationDataset
+from snn_research.training.losses import CombinedLoss, DistillationLoss
+from torch.utils.tensorboard import SummaryWriter
 
-torch.autograd.set_detect_anomaly(True)
+class BreakthroughTrainer:
+    """モニタリングと評価機能を完備した、SNNの統合トレーニングシステム。"""
+    def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module,
+                 scheduler: Optional[torch.optim.lr_scheduler.LRScheduler], device: str,
+                 grad_clip_norm: float, rank: int, use_amp: bool, log_dir: str):
+        self.model = model
+        self.device = device
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.criterion = criterion
+        self.grad_clip_norm = grad_clip_norm
+        self.rank = rank
+        self.use_amp = use_amp and self.device != 'mps'
+        
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self.best_metric = float('inf')
+        
+        if self.rank in [-1, 0]:
+            self.writer = SummaryWriter(log_dir)
+            print(f"✅ TensorBoard logging enabled. Log directory: {log_dir}")
 
-def get_auto_device() -> str:
-    """実行環境に最適なデバイスを自動的に選択する。"""
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+    def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
+        if is_train:
+            self.model.train()
+        else:
+            self.model.eval()
 
-def set_seed(seed: int):
-    import random
-    import numpy as np
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+        input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
+        
+        with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
+            with torch.set_grad_enabled(is_train):
+                # 予測符号化モデルは最後のトークンに対するロジットのみを返す設計
+                # そのため、targetも最後のトークンのみを対象とする必要がある
+                logits, spike_data = self.model(input_ids, return_spikes=True)
+                
+                # ターゲットを整形: (batch_size, seq_len) -> (batch_size)
+                # 各バッチの最後の非パディングトークンをターゲットとする
+                # ここでは簡単のため、シーケンスの最後の要素をターゲットとする
+                last_targets = target_ids[:, -1]
+                loss_dict = self.criterion(logits, last_targets, spike_data, self.model)
+        
+        if is_train:
+            self.optimizer.zero_grad()
+            if self.use_amp:
+                self.scaler.scale(loss_dict['total']).backward()
+                if self.grad_clip_norm > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss_dict['total'].backward()
+                if self.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.optimizer.step()
 
-def setup_distributed():
-    """torchrunによって設定された環境変数に基づいて分散プロセスグループを初期化する。"""
-    if not dist.is_available():
-        raise RuntimeError("Distributed training is not available.")
-    
-    rank = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-    local_rank = int(os.environ["LOCAL_RANK"])
-    
-    dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo", rank=rank, world_size=world_size)
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-    
-    print(f"✅ DDP Worker {rank}/{world_size} initialized on device cuda:{local_rank}.")
-    return rank, world_size, local_rank
+        with torch.no_grad():
+            preds = torch.argmax(logits, dim=-1)
+            if isinstance(self.criterion, CombinedLoss):
+                ignore_idx = self.criterion.ce_loss_fn.ignore_index
+                mask = last_targets != ignore_idx
+                accuracy = (preds[mask] == last_targets[mask]).sum().float() / mask.sum() if mask.sum() > 0 else torch.tensor(0.0)
+                loss_dict['accuracy'] = accuracy
 
-def cleanup_distributed():
-    """分散プロセスグループをクリーンアップする。"""
-    dist.destroy_process_group()
+        return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
 
-def standard_collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]], pad_id: int):
-    inputs, targets = zip(*batch)
-    padded_inputs = pad_sequence(list(inputs), batch_first=True, padding_value=pad_id)
-    padded_targets = pad_sequence(list(targets), batch_first=True, padding_value=pad_id)
-    return padded_inputs, padded_targets
+    def train_epoch(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
+        total_metrics: Dict[str, float] = collections.defaultdict(float)
+        num_batches = len(dataloader)
+        progress_bar = tqdm(dataloader, desc=f"Training Epoch {epoch}", disable=(self.rank not in [-1, 0]))
+        
+        self.model.train()
+        for batch in progress_bar:
+            metrics = self._run_step(batch, is_train=True)
+            for key, value in metrics.items(): total_metrics[key] += value
+            progress_bar.set_postfix({k: v / (progress_bar.n + 1) for k, v in total_metrics.items()})
 
-def distillation_collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]], pad_id: int):
-    inputs, targets, teacher_logits = zip(*batch)
-    padded_inputs = pad_sequence(list(inputs), batch_first=True, padding_value=pad_id)
-    padded_targets = pad_sequence(list(targets), batch_first=True, padding_value=pad_id)
-    padded_teacher_logits = pad_sequence(list(teacher_logits), batch_first=True, padding_value=0.0) # ロジットは0でパディング
-    return padded_inputs, padded_targets, padded_teacher_logits
 
-def main():
-    parser = argparse.ArgumentParser(description="SNNモデルの統合学習スクリプト")
-    parser.add_argument("--config", type=str, default="configs/base_config.yaml", help="設定ファイルのパス")
-    parser.add_argument("--model_config", type=str, default="configs/models/small.yaml", help="モデルアーキテクチャ設定ファイルのパス")
-    parser.add_argument("--data_path", type=str, help="データセットのパス (設定ファイルを上書き)")
-    parser.add_argument("--data_format", type=str, choices=[f.value for f in DataFormat], help="データ形式 (設定ファイルを上書き)")
-    parser.add_argument("--distributed", action="store_true", help="分散学習モードを有効にする")
-    parser.add_argument("--override_config", type=str, action='append', help="DIコンテナの設定を上書き (例: training.type=distillation)")
+        if self.scheduler: self.scheduler.step()
+        
+        avg_metrics = {key: value / num_batches for key, value in total_metrics.items()}
+        
+        if self.rank in [-1, 0]:
+            for key, value in avg_metrics.items():
+                self.writer.add_scalar(f'Train/{key}', value, epoch)
+            self.writer.add_scalar('Train/learning_rate', self.scheduler.get_last_lr()[0] if self.scheduler else self.optimizer.param_groups[0]['lr'], epoch)
+        
+        return avg_metrics
 
-    args = parser.parse_args()
+    def evaluate(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
+        """検証データセットでモデルを評価する。"""
+        total_metrics: Dict[str, float] = collections.defaultdict(float)
+        num_batches = len(dataloader)
+        progress_bar = tqdm(dataloader, desc=f"Evaluating Epoch {epoch}", disable=(self.rank not in [-1, 0]))
+        
+        self.model.eval()
+        with torch.no_grad():
+            for batch in progress_bar:
+                metrics = self._run_step(batch, is_train=False)
+                for key, value in metrics.items(): total_metrics[key] += value
+        
+        avg_metrics = {key: value / num_batches for key, value in total_metrics.items()}
+        
+        if self.rank in [-1, 0]:
+            print(f"Epoch {epoch} Validation Results: " + ", ".join([f"{k}: {v:.4f}" for k, v in avg_metrics.items()]))
+            for key, value in avg_metrics.items():
+                self.writer.add_scalar(f'Validation/{key}', value, epoch)
+        
+        return avg_metrics
 
-    container = TrainingContainer()
-    container.config.from_yaml(args.config)
-    container.config.from_yaml(args.model_config)
-    if args.data_path: container.config.data.path.from_value(args.data_path)
-    if args.data_format: container.config.data.format.from_value(args.data_format)
-    if args.override_config:
-        for override in args.override_config:
-            key, value = override.split('=', 1)
-            #
-            # key をドットで分割して階層的に設定を更新
-            # 例: "training.type=distillation" -> {'training': {'type': 'distillation'}}
-            #
-            keys = key.split('.')
-            d = {keys[-1]: value}
-            for k in reversed(keys[:-1]):
-                d = {k: d}
-            container.config.from_dict(d)
-    
-    set_seed(container.config.seed())
-    
-    is_distributed = args.distributed and torch.cuda.is_available() and torch.cuda.device_count() > 1
-    rank, world_size, local_rank = (-1, 1, -1)
-    if is_distributed:
-        rank, world_size, local_rank = setup_distributed()
+    def save_checkpoint(self, path: str, epoch: int, metric_value: float, **kwargs: Any):
+        if self.rank in [-1, 0]:
+            model_to_save = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+            
+            # 状態を持たないニューロンのバッファ（memなど）は保存しない
+            buffer_names = {name for name, _ in model_to_save.named_buffers() if 'mem' not in name and 'adaptive_threshold' not in name}
+            model_state = {k: v for k, v in model_to_save.state_dict().items() if k not in buffer_names}
 
-    is_distillation = container.config.training.type() == "distillation"
-    
-    tokenizer = container.tokenizer()
-    if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
+            state = {
+                'epoch': epoch, 'model_state_dict': model_state, 
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'best_metric': self.best_metric
+            }
+            if self.use_amp:
+                state['scaler_state_dict'] = self.scaler.state_dict()
+            if self.scheduler: 
+                state['scheduler_state_dict'] = self.scheduler.state_dict()
+            state.update(kwargs)
+            
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            torch.save(state, path)
+            print(f"✅ チェックポイントを '{path}' に保存しました (Epoch: {epoch})。")
+            
+            is_best = metric_value < self.best_metric
+            if is_best:
+                self.best_metric = metric_value
+                best_path = os.path.join(os.path.dirname(path), 'best_model.pth')
+                
+                # ベストモデルには、推論に必要な情報のみを保存
+                temp_state_for_best = {'model_state_dict': model_state}
+                temp_state_for_best.update(kwargs)
+                torch.save(temp_state_for_best, best_path)
+                print(f"🏆 新しいベストモデルを '{best_path}' に保存しました (Metric: {metric_value:.4f})。")
 
-    # データセットの準備
-    if is_distillation:
-        data_dir = container.config.data.path()
-        jsonl_path = os.path.join(data_dir, "distillation_data.jsonl")
-        dataset = DistillationDataset(file_path=jsonl_path, data_dir=data_dir, tokenizer=tokenizer, max_seq_len=container.config.model.time_steps())
-        _collate_fn = partial(distillation_collate_fn, pad_id=tokenizer.pad_token_id)
-    else:
-        dataset_class = get_dataset_class(DataFormat(container.config.data.format()))
-        dataset = dataset_class(file_path=container.config.data.path(), tokenizer=tokenizer, max_seq_len=container.config.model.time_steps())
-        _collate_fn = partial(standard_collate_fn, pad_id=tokenizer.pad_token_id)
-    
-    val_split = int(len(dataset) * container.config.data.split_ratio())
-    train_dataset, _ = random_split(dataset, [len(dataset) - val_split, val_split])
-    
-    sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_distributed else None
-    dataloader = DataLoader(train_dataset, batch_size=container.config.training.batch_size(), sampler=sampler, collate_fn=_collate_fn, num_workers=2, shuffle=(sampler is None))
+    def load_checkpoint(self, path: str) -> int:
+        if not os.path.exists(path):
+            print(f"⚠️ チェックポイントファイルが見つかりません: {path}。最初から学習を開始します。")
+            return 0
+            
+        map_location = self.device
+        checkpoint = torch.load(path, map_location=map_location)
+        
+        model_to_load = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+        
+        # strict=Falseで、バッファなどの不一致を許容
+        model_to_load.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        
+        if 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        if self.scheduler and 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        if self.use_amp and 'scaler_state_dict' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
 
-    # デバイスの決定
-    if is_distributed:
-        device = f"cuda:{local_rank}"
-    else:
-        config_device = container.config.device()
-        device = get_auto_device() if config_device == "auto" else config_device
-    print(f"Process {rank if rank != -1 else 0}: Using device: {device}")
-    
-    model = container.snn_model().to(device)
-    if is_distributed:
-        model = DDP(model, device_ids=[local_rank])
-    
-    optimizer = container.optimizer(params=model.parameters())
-    scheduler = container.scheduler(optimizer=optimizer) if container.config.training.use_scheduler() else None
-    
-    trainer_args = {"model": model, "optimizer": optimizer, "scheduler": scheduler, "device": device, "rank": rank}
-    trainer = container.distillation_trainer(**trainer_args) if is_distillation else container.standard_trainer(**trainer_args)
-    
-    checkpoint_path = os.path.join(container.config.training.log_dir(), "checkpoint.pth")
-    start_epoch = trainer.load_checkpoint(checkpoint_path)
-    
-    model_config = container.config.model.to_dict()
+        self.best_metric = checkpoint.get('best_metric', float('inf'))
+        start_epoch = checkpoint.get('epoch', 0)
+        print(f"✅ チェックポイント '{path}' を正常にロードしました。Epoch {start_epoch} から学習を再開します。")
+        return start_epoch
 
-    if rank in [-1, 0]: print(f"\n🔥 {container.config.training.type()} 学習を開始します...")
-    for epoch in range(start_epoch, container.config.training.epochs()):
-        if is_distributed and sampler: sampler.set_epoch(epoch)
-        metrics = trainer.train_epoch(dataloader, epoch)
-        if rank in [-1, 0]:
-            lr = scheduler.get_last_lr()[0] if scheduler else container.config.training.learning_rate()
-            metrics_str = ", ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
-            print(f"Epoch {epoch+1: >3}/{container.config.training.epochs()}: {metrics_str}, lr: {lr:.6f}")
-            if (epoch + 1) % container.config.training.log_interval() == 0:
-                trainer.save_checkpoint(
-                    path=checkpoint_path,
-                    epoch=epoch + 1,
-                    metric_value=metrics.get('total', float('inf')),
-                    tokenizer_name=tokenizer.name_or_path, 
-                    config=model_config
+
+class DistillationTrainer(BreakthroughTrainer):
+    """知識蒸留に特化したトレーナー（予測符号化モデル対応）。"""
+    def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
+        if is_train: self.model.train()
+        else: self.model.eval()
+            
+        student_input, student_target, teacher_logits_full = [t.to(self.device) for t in batch]
+
+        with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
+            with torch.set_grad_enabled(is_train):
+                student_logits, spike_data = self.model(student_input, return_spikes=True)
+                
+                # ターゲットと教師ロジットを最後のトークンに合わせる
+                last_student_target = student_target[:, -1]
+                last_teacher_logits = teacher_logits_full[:, -1, :]
+
+                assert isinstance(self.criterion, DistillationLoss)
+                loss_dict = self.criterion(
+                    student_logits=student_logits,
+                    teacher_logits=last_teacher_logits,
+                    targets=last_student_target,
+                    spikes=spike_data,
+                    model=self.model
                 )
 
-    if is_distributed:
-        cleanup_distributed()
-
-if __name__ == "__main__":
-    main()
+        
+        if is_train:
+            self.optimizer.zero_grad()
+            self.scaler.scale(loss_dict['total']).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        
+        return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
