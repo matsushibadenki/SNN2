@@ -6,6 +6,7 @@ from snn_research.agent.memory import Memory
 from .rag_snn import RAGSystem
 from .astrocyte_network import AstrocyteNetwork
 from .emergent_system import EmergentSystem
+from .intrinsic_motivation import IntrinsicMotivationSystem
 
 __all__ = [
     "HierarchicalPlanner", 
@@ -13,5 +14,6 @@ __all__ = [
     "Memory", 
     "RAGSystem",
     "AstrocyteNetwork",
-    "EmergentSystem"
+    "EmergentSystem",
+    "IntrinsicMotivationSystem"
 ]
