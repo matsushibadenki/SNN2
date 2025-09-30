@@ -1,4 +1,4 @@
-# /snn_research/agent/self_evolving_agent.py
+# matsushibadenki/snn2/snn_research/agent/self_evolving_agent.py
 # Phase 5: メタ進化 - AIによる自己開発を担うエージェント
 #
 # 機能:
@@ -61,6 +61,24 @@ class SelfEvolvingAgent(AutonomousAgent):
         self.memory.add_entry("PERFORMANCE_REFLECTION_ENDED", {"analysis": analysis})
         return analysis
 
+    def _parse_benchmark_results(self, output: str) -> Dict[str, float]:
+        """ベンチマークスクリプトの出力からSNNの性能指標を抽出する。"""
+        metrics = {}
+        try:
+            snn_results_str = re.search(r"SNN\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.,NA/]+)", output, re.IGNORECASE)
+            if snn_results_str:
+                accuracy = float(snn_results_str.group(1))
+                spikes_str = snn_results_str.group(3).replace(',', '')
+                avg_spikes = float(spikes_str) if 'n/a' not in spikes_str.lower() else 0.0
+                
+                metrics = {
+                    "accuracy": accuracy,
+                    "avg_spikes_per_sample": avg_spikes
+                }
+        except (AttributeError, IndexError, ValueError) as e:
+            print(f"⚠️ ベンチマーク結果のパースに失敗しました: {e}\nOutput:\n{output}")
+        return metrics
+        
     def generate_code_modification_proposal(self, analysis: str) -> Optional[Dict[str, str]]:
         """
         分析結果に基づき、具体的なコード修正案を構造化データとして生成する。
