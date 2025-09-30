@@ -33,14 +33,20 @@ training:
   loss:
     ce_weight: 1.0
     spike_reg_weight: 0.01
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    sparsity_reg_weight: 0.00001 # スパース性を促進する正則化項の重み
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
-  # 蒸留学습設定
+  # 蒸留学習設定
   distillation:
     teacher_model: "gpt2"
     loss:
       ce_weight: 0.3
       distill_weight: 0.7
       spike_reg_weight: 0.01
+      # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+      sparsity_reg_weight: 0.00001
+      # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
       temperature: 2.0
 
 # 推論/アプリ設定
