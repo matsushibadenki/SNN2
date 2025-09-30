@@ -58,7 +58,6 @@ class AnnToSnnConverter:
         else:
             raise ValueError("サポートされていないファイル形式です。.safetensorsまたは.ggufを指定してください。")
 
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def calibrate_thresholds(self, calibration_loader: Any, target_rate: float = 0.1, epochs: int = 1):
         """
         変換後のSNNモデルの発火閾値をキャリブレーションする。
@@ -157,13 +156,11 @@ class AnnToSnnConverter:
         for epoch in range(epochs):
             progress_bar = tqdm(dummy_data_loader, desc=f"Distillation Epoch {epoch+1}")
             for batch in progress_bar:
-                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 # DataLoaderからの出力がタプルかチェック
                 if isinstance(batch, (list, tuple)):
                     inputs = batch[0].to(self.device)
                 else:
                     inputs = batch.to(self.device)
-                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 
                 optimizer.zero_grad()
                 
