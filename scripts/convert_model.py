@@ -1,5 +1,8 @@
 # matsushibadenki/snn2/scripts/convert_model.py
 # ANNモデルからSNNモデルへの変換・蒸留を実行するためのスクリプト
+#
+# 変更点:
+# - [改善] オンライン知識蒸留で、ダミーではなく指定された教師モデルをロードするように修正。
 
 import argparse
 import sys
@@ -63,9 +66,10 @@ def main():
         )
     elif args.method == "distill":
         # 知識蒸留のデモンストレーション
-        # 本来はann_model_pathから実際のモデルをロードしますが、
-        # ここでは互換性のあるダミーのANNモデルを教師役としてインスタンス化します。
-        print("⚠️ 蒸留用の教師ANNモデルとして、ダミーのANNBaselineModelを使用します。")
+        print(f"教師ANNモデルを {args.ann_model_path} からロードします。")
+
+        # ANNのアーキテクチャをSNNと合わせる（この例ではANNBaselineModelを使用）
+        # 注: 実際のユースケースでは、変換元ANNのアーキテクチャに合わせたモデルクラスが必要です
         teacher_model = ANNBaselineModel(
             vocab_size=container.tokenizer.provided.vocab_size(),
             d_model=snn_config['d_model'],
@@ -75,6 +79,17 @@ def main():
             num_classes=container.tokenizer.provided.vocab_size()
         )
         
+        # コンバータの内部メソッドを使って重みをロード
+        try:
+            ann_weights = converter._load_ann_weights(args.ann_model_path)
+            # SNNと互換性のあるキーのみをロード
+            teacher_model.load_state_dict(ann_weights, strict=False)
+            print("✅ 教師モデルの重みを正常にロードしました。")
+        except Exception as e:
+            print(f"❌ 教師モデルの重みロードに失敗しました: {e}")
+            print("   SNNモデルとANNモデルのアーキテクチャが一致しているか確認してください。")
+            return
+
         # ダミーの学習データローダーを作成
         dummy_dataset = [torch.randint(0, container.tokenizer.provided.vocab_size(), (snn_config['time_steps'],)) for _ in range(32)]
         dummy_loader = torch.utils.data.DataLoader(dummy_dataset, batch_size=4)
