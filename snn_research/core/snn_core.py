@@ -3,21 +3,18 @@
 #
 # 変更点:
 # - ANN性能に近づけるため、階層的な「予測符号化」アーキテクチャを導入。
-#   - PredictiveCodingLayerを追加し、トップダウン予測とボトムアップ観測の誤差を計算。
-#   - BreakthroughSNNを、予測符号化を行う階層モデルに刷新。
 # - 表現力向上のため、AdaptiveLIFNeuronを標準ニューロンとして採用。
-# - STDPなどの複雑なコンポーネントは一旦コメントアウトし、まずは中核となる予測符号化の安定動作に注力。
-# - mypyエラー解消のため、型ヒントを修正・追加。
 # - [改善] BreakthroughSNNのforwardパスを、より本格的なリカレント（RNN）形式の時系列処理に変更。
 # - [改善] 学習の安定化のため、SNNに適したLayerNormと残差接続を導入。
-# - [修正] mypyエラー解消のため、forwardメソッドの戻り値の型ヒントと実際の値をTensorに統一。
 # - [追加] Phase 4: 樹状突起演算ニューロンを実装。
+# - [更新] BreakthroughSNNとPredictiveCodingLayerをリファクタリングし、
+#   設定に応じてAdaptiveLIFNeuronとDendriticNeuronを切り替えられるように変更。
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from spikingjelly.activation_based import surrogate, functional  # type: ignore
-from typing import Tuple, Dict, Any, Optional, List
+from typing import Tuple, Dict, Any, Optional, List, Type
 import math
 
 # --- ニューロンモデル ---
@@ -25,6 +22,7 @@ class AdaptiveLIFNeuron(nn.Module):
     """
     適応的発火閾値を持つLIFニューロン (表現力向上のための標準ニューロン)
     """
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def __init__(
         self,
         features: int,
@@ -115,15 +113,21 @@ class PredictiveCodingLayer(nn.Module):
     予測符号化を実行する単一の階層レイヤー。
     トップダウンの予測とボトムアップの観測から誤差を計算する。
     """
-    def __init__(self, d_model: int, d_state: int, n_head: int):
+    def __init__(self, d_model: int, d_state: int, n_head: int, neuron_class: Type[nn.Module], neuron_params: Dict[str, Any]):
         super().__init__()
         # 生成モデル (トップダウン予測を生成)
         self.generative_fc = nn.Linear(d_state, d_model)
-        self.generative_lif = AdaptiveLIFNeuron(d_model)
+        if neuron_class == DendriticNeuron:
+            self.generative_neuron = neuron_class(input_features=d_model, **neuron_params)
+        else:  # AdaptiveLIFNeuronを想定
+            self.generative_neuron = neuron_class(features=d_model)
 
         # 推論モデル (ボトムアップ観測から状態を更新)
         self.inference_fc = nn.Linear(d_model, d_state)
-        self.inference_lif = AdaptiveLIFNeuron(d_state)
+        if neuron_class == DendriticNeuron:
+            self.inference_neuron = neuron_class(input_features=d_state, **neuron_params)
+        else:  # AdaptiveLIFNeuronを想定
+            self.inference_neuron = neuron_class(features=d_state)
 
         self.norm_state = SNNLayerNorm(d_state)
         self.norm_error = SNNLayerNorm(d_model)
@@ -131,26 +135,26 @@ class PredictiveCodingLayer(nn.Module):
 
     def forward(self, bottom_up_input: torch.Tensor, top_down_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # 1. トップダウン予測を生成
-        prediction, _ = self.generative_lif(self.generative_fc(top_down_state))
+        prediction, _ = self.generative_neuron(self.generative_fc(top_down_state))
 
         # 2. 予測誤差を計算 (観測 - 予測)
         prediction_error = F.relu(bottom_up_input - prediction)
         prediction_error = self.norm_error(prediction_error)
 
         # 3. 予測誤差に基づいて状態を更新
-        state_update, _ = self.inference_lif(self.inference_fc(prediction_error))
+        state_update, inference_mem = self.inference_neuron(self.inference_fc(prediction_error))
         
         # 4. 残差接続と正規化で状態を更新
         updated_state = self.norm_state(top_down_state + state_update)
 
-        return updated_state, prediction_error, prediction, self.inference_lif.mem
+        return updated_state, prediction_error, prediction, inference_mem
 
 # --- コアSNNモデル ---
 class BreakthroughSNN(nn.Module):
     """
     リカレント予測符号化アーキテクチャを実装した階層的SNN
     """
-    def __init__(self, vocab_size: int, d_model: int, d_state: int, num_layers: int, time_steps: int, n_head: int):
+    def __init__(self, vocab_size: int, d_model: int, d_state: int, num_layers: int, time_steps: int, n_head: int, neuron_config: Optional[Dict[str, Any]] = None):
         super().__init__()
         self.time_steps = time_steps
         self.num_layers = num_layers
@@ -158,10 +162,33 @@ class BreakthroughSNN(nn.Module):
         self.d_state = d_state
 
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.input_encoder = nn.Sequential(nn.Linear(d_model, d_model), AdaptiveLIFNeuron(d_model))
+        
+        if neuron_config is None:
+            neuron_config = {"type": "lif"}
+        
+        neuron_type = neuron_config.get("type", "lif")
+
+        if neuron_type == "dendritic":
+            neuron_class = DendriticNeuron
+            neuron_params = {
+                "num_branches": neuron_config.get("num_branches", 4),
+                "branch_features": neuron_config.get("branch_features", d_model // 4)
+            }
+            self.input_encoder = nn.Sequential(
+                nn.Linear(d_model, d_model),
+                DendriticNeuron(input_features=d_model, **neuron_params)
+            )
+            print("💡 BreakthroughSNN initialized with Dendritic Neurons.")
+        else:  # デフォルトは "lif"
+            neuron_class = AdaptiveLIFNeuron
+            neuron_params = {}  # LIFに追加パラメータは不要
+            self.input_encoder = nn.Sequential(
+                nn.Linear(d_model, d_model),
+                AdaptiveLIFNeuron(features=d_model)
+            )
         
         self.pc_layers = nn.ModuleList(
-            [PredictiveCodingLayer(d_model, d_state, n_head) for _ in range(num_layers)]
+            [PredictiveCodingLayer(d_model, d_state, n_head, neuron_class, neuron_params) for _ in range(num_layers)]
         )
         
         self.output_projection = nn.Linear(d_model, vocab_size)
@@ -218,3 +245,4 @@ class BreakthroughSNN(nn.Module):
         avg_mem = total_mem_potential / seq_len if return_spikes else torch.tensor(0.0)
 
         return final_logits, avg_spikes, avg_mem
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
