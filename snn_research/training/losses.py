@@ -6,6 +6,7 @@
 # - 蒸留時にTokenizerを統一したため、DistillationLoss内の不整合対応ロジックを削除。
 # - DIコンテナの依存関係解決を遅延させるため、pad_idではなくtokenizerを直接受け取るように変更。
 # - ハードウェア実装を意識し、モデルのスパース性を促進するL1正則化項を追加。
+# - [改善] 学習安定化のため、膜電位（membrane potential）の正則化項を追加。
 
 import torch
 import torch.nn as nn
@@ -17,7 +18,7 @@ def _calculate_sparsity_loss(model: nn.Module) -> torch.Tensor:
     """モデルの重みのL1ノルムを計算し、スパース性を促進する。"""
     params = [p for p in model.parameters() if p.requires_grad]
     if not params:
-        return torch.tensor(0.0) # パラメータがない場合は0を返す
+        return torch.tensor(0.0)
 
     device = params[0].device
     l1_norm = sum(
@@ -27,45 +28,50 @@ def _calculate_sparsity_loss(model: nn.Module) -> torch.Tensor:
     return l1_norm
 
 class CombinedLoss(nn.Module):
-    """クロスエントロピー損失、スパイク発火率、スパース性の正則化を組み合わせた損失関数。"""
-    def __init__(self, ce_weight: float, spike_reg_weight: float, sparsity_reg_weight: float, tokenizer: PreTrainedTokenizerBase, target_spike_rate: float = 0.02):
+    """クロスエントロピー損失、各種正則化を組み合わせた損失関数。"""
+    def __init__(self, ce_weight: float, spike_reg_weight: float, sparsity_reg_weight: float, mem_reg_weight: float, tokenizer: PreTrainedTokenizerBase, target_spike_rate: float = 0.02):
         super().__init__()
         pad_id = tokenizer.pad_token_id
         self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
-        self.weights = {'ce': ce_weight, 'spike_reg': spike_reg_weight, 'sparsity_reg': sparsity_reg_weight}
+        self.weights = {'ce': ce_weight, 'spike_reg': spike_reg_weight, 'sparsity_reg': sparsity_reg_weight, 'mem_reg': mem_reg_weight}
         self.target_spike_rate = target_spike_rate
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, model: nn.Module) -> dict:
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module) -> dict:
         ce_loss = self.ce_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
         
         spike_rate = spikes.mean()
         spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
         
         sparsity_loss = _calculate_sparsity_loss(model)
+
+        # 膜電位が大きくなりすぎないように正則化
+        mem_reg_loss = torch.mean(mem**2)
         
         total_loss = (self.weights['ce'] * ce_loss + 
                       self.weights['spike_reg'] * spike_reg_loss +
-                      self.weights['sparsity_reg'] * sparsity_loss)
+                      self.weights['sparsity_reg'] * sparsity_loss +
+                      self.weights['mem_reg'] * mem_reg_loss)
         
         return {
             'total': total_loss, 'ce_loss': ce_loss,
             'spike_reg_loss': spike_reg_loss, 'sparsity_loss': sparsity_loss,
-            'spike_rate': spike_rate
+            'mem_reg_loss': mem_reg_loss, 'spike_rate': spike_rate
         }
 
 class DistillationLoss(nn.Module):
-    """知識蒸留のための損失関数（スパース性正則化付き）。"""
+    """知識蒸留のための損失関数（各種正則化付き）。"""
     def __init__(self, tokenizer: PreTrainedTokenizerBase, ce_weight: float, distill_weight: float,
-                 spike_reg_weight: float, sparsity_reg_weight: float, temperature: float):
+                 spike_reg_weight: float, sparsity_reg_weight: float, mem_reg_weight: float, temperature: float, target_spike_rate: float = 0.02):
         super().__init__()
         student_pad_id = tokenizer.pad_token_id
         self.temperature = temperature
-        self.weights = {'ce': ce_weight, 'distill': distill_weight, 'spike_reg': spike_reg_weight, 'sparsity_reg': sparsity_reg_weight}
+        self.weights = {'ce': ce_weight, 'distill': distill_weight, 'spike_reg': spike_reg_weight, 'sparsity_reg': sparsity_reg_weight, 'mem_reg': mem_reg_weight}
         self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=student_pad_id if student_pad_id is not None else -100)
         self.distill_loss_fn = nn.KLDivLoss(reduction='batchmean', log_target=False)
+        self.target_spike_rate = target_spike_rate
 
     def forward(self, student_logits: torch.Tensor, teacher_logits: torch.Tensor,
-                targets: torch.Tensor, spikes: torch.Tensor, model: nn.Module) -> Dict[str, torch.Tensor]:
+                targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module) -> Dict[str, torch.Tensor]:
 
         assert student_logits.shape == teacher_logits.shape, \
             f"Shape mismatch! Student: {student_logits.shape}, Teacher: {teacher_logits.shape}"
@@ -77,18 +83,21 @@ class DistillationLoss(nn.Module):
         distill_loss = self.distill_loss_fn(soft_student_log_probs, soft_teacher_probs) * (self.temperature ** 2)
 
         spike_rate = spikes.mean()
-        target_spike_rate = torch.tensor(0.02, device=spikes.device)
+        target_spike_rate = torch.tensor(self.target_spike_rate, device=spikes.device)
         spike_reg_loss = F.mse_loss(spike_rate, target_spike_rate)
 
         sparsity_loss = _calculate_sparsity_loss(model)
+        
+        mem_reg_loss = torch.mean(mem**2)
 
         total_loss = (self.weights['ce'] * ce_loss +
                       self.weights['distill'] * distill_loss +
                       self.weights['spike_reg'] * spike_reg_loss +
-                      self.weights['sparsity_reg'] * sparsity_loss)
+                      self.weights['sparsity_reg'] * sparsity_loss +
+                      self.weights['mem_reg'] * mem_reg_loss)
 
         return {
             'total': total_loss, 'ce_loss': ce_loss,
             'distill_loss': distill_loss, 'spike_reg_loss': spike_reg_loss,
-            'sparsity_loss': sparsity_loss
+            'sparsity_loss': sparsity_loss, 'mem_reg_loss': mem_reg_loss
         }
