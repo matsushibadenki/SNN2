@@ -6,6 +6,7 @@
 # - ANN-SNN変換: ANNの重みをSNNモデルに直接コピーする。
 # - オンライン知識蒸留: ANNを教師モデルとして、SNNを学習させる。
 # - 閾値キャリブレーション機能を追加し、変換後のSNNの活動を安定させる。
+# - [改善] GGUFファイルの読み込み機能を正式に実装。
 
 import torch
 import torch.nn as nn
@@ -14,20 +15,22 @@ import torch.nn.functional as F
 from safetensors.torch import load_file
 from tqdm import tqdm  # type: ignore
 from typing import Dict, Any, Optional, Iterator
+from gguf import GGUFReader
 
 from snn_research.benchmark.ann_baseline import ANNBaselineModel
 from snn_research.core.snn_core import AdaptiveLIFNeuron, BreakthroughSNN
 
-# GGUFローダーのプレースホルダー (実際のプロジェクトではggufライブラリを使用)
-def _load_gguf_placeholder(path: str) -> Dict[str, torch.Tensor]:
-    print(f"⚠️ GGUFローダーは現在プレースホルダーです。'{path}' のダミーデータを返します。")
-    # 実際のggufライブラリは外部依存なので、ここではダミーのstate_dictを返します。
-    # 実際のプロジェクトでは `gguf` ライブラリのローダーに置き換える必要があります。
-    return {
-        "token_embedding.weight": torch.randn(32000, 128),
-        "output_projection.weight": torch.randn(32000, 128),
-        # ... その他のレイヤーの重み
-    }
+def _load_gguf(path: str) -> Dict[str, torch.Tensor]:
+    """GGUFファイルを読み込み、PyTorchのstate_dictを返す。"""
+    print(f" GGUFファイルをロード中: {path}")
+    reader = GGUFReader(path, 'r')
+    state_dict = {}
+    for tensor in reader.tensors:
+        # GGUFのテンソルをPyTorchテンソルに変換
+        # GGUFはリトルエンディアンで保存されているため、コピーしてメモリレイアウトを保証
+        state_dict[tensor.name] = torch.from_numpy(tensor.data.copy())
+    print(f"✅ GGUFから {len(state_dict)} 個のテンソルをロードしました。")
+    return state_dict
 
 class AnnToSnnConverter:
     """
@@ -52,9 +55,8 @@ class AnnToSnnConverter:
         if ann_model_path.endswith(".safetensors"):
             return load_file(ann_model_path, device=self.device)
         elif ann_model_path.endswith(".gguf"):
-            # GGUFの読み込みは専用のライブラリが必要になります。
-            # ここではダミーのローダーを呼び出します。
-            return _load_gguf_placeholder(ann_model_path)
+            # GGUFローダーを呼び出すように修正
+            return _load_gguf(ann_model_path)
         else:
             raise ValueError("サポートされていないファイル形式です。.safetensorsまたは.ggufを指定してください。")
 
