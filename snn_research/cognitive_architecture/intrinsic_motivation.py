@@ -1,4 +1,4 @@
-# /snn_research/cognitive_architecture/intrinsic_motivation.py
+# matsushibadenki/snn2/snn_research/cognitive_architecture/intrinsic_motivation.py
 # Phase 6: 内発的動機付けシステム
 #
 # 機能:
@@ -65,6 +65,6 @@ class IntrinsicMotivationSystem:
             bool: 報酬が低く（＝退屈しており）、新しい刺激を求めるべきならTrue。
         """
         is_bored = abs(self.last_reward) < reward_threshold
-        if is_bored:
+        if is_bored and len(self.error_history) == self.window_size:
             print("🥱 システムは安定しており、退屈しています。新しい探求を推奨します。")
         return is_bored
