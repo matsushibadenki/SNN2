@@ -79,9 +79,7 @@ def main():
     parser.add_argument("--data_path", type=str, help="データセットのパス (設定ファイルを上書き)")
     parser.add_argument("--data_format", type=str, choices=[f.value for f in DataFormat], help="データ形式 (設定ファイルを上書き)")
     parser.add_argument("--distributed", action="store_true", help="分散学習モードを有効にする")
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
-    parser.add_argument("--override_config", type=str, help="DIコンテナの設定を上書き (例: training.type=distillation)")
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    parser.add_argument("--override_config", type=str, action='append', help="DIコンテナの設定を上書き (例: training.type=distillation)")
 
     args = parser.parse_args()
 
@@ -90,19 +88,18 @@ def main():
     container.config.from_yaml(args.model_config)
     if args.data_path: container.config.data.path.from_value(args.data_path)
     if args.data_format: container.config.data.format.from_value(args.data_format)
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     if args.override_config:
-        key, value = args.override_config.split('=')
-        #
-        # key をドットで分割して階層的に設定を更新
-        # 例: "training.type=distillation" -> {'training': {'type': 'distillation'}}
-        #
-        keys = key.split('.')
-        d = {keys[-1]: value}
-        for k in reversed(keys[:-1]):
-            d = {k: d}
-        container.config.from_dict(d)
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        for override in args.override_config:
+            key, value = override.split('=', 1)
+            #
+            # key をドットで分割して階層的に設定を更新
+            # 例: "training.type=distillation" -> {'training': {'type': 'distillation'}}
+            #
+            keys = key.split('.')
+            d = {keys[-1]: value}
+            for k in reversed(keys[:-1]):
+                d = {k: d}
+            container.config.from_dict(d)
     
     set_seed(container.config.seed())
     
