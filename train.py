@@ -93,7 +93,15 @@ def main():
     # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     if args.override_config:
         key, value = args.override_config.split('=')
-        container.config.from_dict({key: value})
+        #
+        # key をドットで分割して階層的に設定を更新
+        # 例: "training.type=distillation" -> {'training': {'type': 'distillation'}}
+        #
+        keys = key.split('.')
+        d = {keys[-1]: value}
+        for k in reversed(keys[:-1]):
+            d = {k: d}
+        container.config.from_dict(d)
     # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     
     set_seed(container.config.seed())
