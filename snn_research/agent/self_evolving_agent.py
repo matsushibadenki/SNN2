@@ -87,8 +87,11 @@ class SelfEvolvingAgent(AutonomousAgent):
         self.memory.add_entry("CODE_MODIFICATION_PROPOSAL_STARTED", {"analysis": analysis})
         
         proposal = None
+        
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         # スパイク数が多すぎる場合、正則化を強める提案
-        if "avg_spikes_per_sample" in analysis and float(re.search(r"'avg_spikes_per_sample': ([\d.]+)", analysis).group(1)) > 1000.0:
+        spike_match = re.search(r"'avg_spikes_per_sample': ([\d.]+)", analysis)
+        if spike_match and float(spike_match.group(1)) > 1000.0:
             proposal = {
                 "file_path": "configs/base_config.yaml",
                 "action": "replace",
@@ -96,13 +99,16 @@ class SelfEvolvingAgent(AutonomousAgent):
                 "new_content": "    spike_reg_weight: 0.05 # Increased by agent to reduce spikes"
             }
         # 精度が低い場合、学習率を少し下げる提案
-        elif "accuracy" in analysis and float(re.search(r"'accuracy': ([\d.]+)", analysis).group(1)) < 0.8:
-             proposal = {
-                "file_path": "configs/base_config.yaml",
-                "action": "replace",
-                "target_pattern": r"learning_rate:\s*[\d.]+",
-                "new_content": "  learning_rate: 0.0003 # Decreased by agent for stable learning"
-            }
+        elif "accuracy" in analysis:
+            accuracy_match = re.search(r"'accuracy': ([\d.]+)", analysis)
+            if accuracy_match and float(accuracy_match.group(1)) < 0.8:
+                 proposal = {
+                    "file_path": "configs/base_config.yaml",
+                    "action": "replace",
+                    "target_pattern": r"learning_rate:\s*[\d.]+",
+                    "new_content": "  learning_rate: 0.0003 # Decreased by agent for stable learning"
+                }
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
             
         self.memory.add_entry("CODE_MODIFICATION_PROPOSAL_ENDED", {"proposal": proposal})
         return proposal
