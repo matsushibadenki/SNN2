@@ -1,11 +1,11 @@
-# matsushibadenki/snn2/SNN2-796d8b8cb001851a17a9fe6a9f3602b97403935d/snn_research/core/snn_core.py
+# matsushibadenki/snn2/snn_research/core/snn_core.py
 # SNNモデルの定義、次世代ニューロンなど、中核となるロジックを集約したライブラリ
 #
 # 変更点:
 # - 外部AIからのフィードバックに基づき、廃止されていた高度なコンポーネント(TTFSEncoder, IzhikevichNeuronなど)を復活。
 # - BreakthroughSNNがTTFSEncoderをオプションで使えるようにし、表現力を回復。
 # - AttentionalSpikingSSMLayerの出力にLIFニューロンを再追加し、SNNとしての特性を強化。
-# - 全体的な可読性と拡張性を向上させるリファクタリングを実施。
+# - AttentionalSpikingSSMLayerにSTDP（スパイクタイミング依存可塑性）を統合し、ハイブリッド学習を実現。
 
 import torch
 import torch.nn as nn
@@ -76,10 +76,11 @@ class AdaptiveLIFNeuron(nn.Module):
         spike = self.surrogate_function(v_potential - self.adaptive_threshold)  # type: ignore
         v_mem_new = v_potential * (1.0 - spike.detach())
 
-        with torch.no_grad():
-            spike_rate_error = spike.mean() - self.target_spike_rate
-            self.adaptive_threshold += self.adaptation_strength * spike_rate_error
-            self.adaptive_threshold.clamp_(min=0.5)
+        if self.training: # 学習中にのみ閾値を適応させる
+            with torch.no_grad():
+                spike_rate_error = spike.mean() - self.target_spike_rate
+                self.adaptive_threshold += self.adaptation_strength * spike_rate_error
+                self.adaptive_threshold.clamp_(min=0.5)
 
         return spike, v_mem_new
 
@@ -144,8 +145,8 @@ class STDPSynapse(nn.Module):
         self.weight = nn.Parameter(
             torch.rand(out_features, in_features) * (w_max - w_min) + w_min
         )
-        self.register_buffer("pre_trace", torch.zeros(1, in_features))
-        self.register_buffer("post_trace", torch.zeros(1, out_features))
+        self.register_buffer("pre_trace", torch.zeros(1, 1, in_features))
+        self.register_buffer("post_trace", torch.zeros(1, 1, out_features))
         self.pre_trace: torch.Tensor
         self.post_trace: torch.Tensor
 
@@ -154,23 +155,26 @@ class STDPSynapse(nn.Module):
 
     @torch.no_grad()
     def update_weights(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor):
-        self.pre_trace = (
-            self.pre_trace * self.tau_pre_decay + pre_spikes.mean(dim=0, keepdim=True)
-        )
-        self.post_trace = (
-            self.post_trace * self.tau_post_decay + post_spikes.mean(dim=0, keepdim=True)
-        )
+        # トレースの形状を (batch, seq, features) に合わせる
+        if self.pre_trace.shape[0] != pre_spikes.shape[0] or self.pre_trace.shape[1] != pre_spikes.shape[1]:
+            self.pre_trace = torch.zeros_like(pre_spikes)
+            self.post_trace = torch.zeros_like(post_spikes)
+
+        self.pre_trace = self.pre_trace * self.tau_pre_decay + pre_spikes
+        self.post_trace = self.post_trace * self.tau_post_decay + post_spikes
+        
+        # バッチとシーケンス次元で平均を取ってから更新量を計算
         delta_w_pos = self.A_pos * torch.outer(
-            post_spikes.mean(dim=0), self.pre_trace.squeeze(0)
+            post_spikes.mean(dim=(0,1)), self.pre_trace.mean(dim=(0,1))
         )
         delta_w_neg = self.A_neg * torch.outer(
-            self.post_trace.squeeze(0), pre_spikes.mean(dim=0)
+            self.post_trace.mean(dim=(0,1)), pre_spikes.mean(dim=(0,1))
         )
         self.weight.add_(delta_w_pos - delta_w_neg).clamp_(self.w_min, self.w_max)
 
 
 class AttentionalSpikingSSMLayer(nn.Module):
-    """アテンション機構を統合したSpiking State Space Model"""
+    """アテンション機構とSTDPを統合したSpiking State Space Model"""
 
     def __init__(self, d_model: int, d_state: int = 64, n_head: int = 4):
         super().__init__()
@@ -185,30 +189,47 @@ class AttentionalSpikingSSMLayer(nn.Module):
 
         self.q_proj = nn.Linear(d_state, d_state)
         self.kv_proj = nn.Linear(d_model, d_state * 2)
-        self.out_proj = nn.Linear(d_state, d_state)
+        
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # STDP学習則を持つシナプスに置き換え
+        self.out_proj = STDPSynapse(d_state, d_state)
+        # Attentionからの連続値出力をスパイクに変換するためのニューロン
+        self.attention_lif = AdaptiveLIFNeuron(d_state)
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
         self.state_lif = AdaptiveLIFNeuron(d_state)
-        self.output_lif = AdaptiveLIFNeuron(d_model)  # SNN特性を強化するため出力LIFを復活
+        self.output_lif = AdaptiveLIFNeuron(d_model)
 
+        # 状態変数のバッファを登録
         self.register_buffer("h_state", torch.zeros(1, 1, d_state))
         self.register_buffer("state_v_mem", torch.zeros(1, 1, d_state))
         self.register_buffer("output_v_mem", torch.zeros(1, 1, d_model))
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        self.register_buffer("attention_v_mem", torch.zeros(1, 1, d_state))
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.h_state: torch.Tensor
         self.state_v_mem: torch.Tensor
         self.output_v_mem: torch.Tensor
+        self.attention_v_mem: torch.Tensor
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, time_steps, seq_len, _ = x.shape
 
+        # 状態変数の初期化
         if self.h_state.shape[0] != batch_size or self.h_state.shape[1] != seq_len:
             h = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
             state_v = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
             output_v = torch.zeros(batch_size, seq_len, self.d_model, device=x.device)
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+            attention_v = torch.zeros(batch_size, seq_len, self.d_state, device=x.device)
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         else:
-            h, state_v, output_v = (
+            h, state_v, output_v, attention_v = (
                 self.h_state.clone().detach(),
                 self.state_v_mem.clone().detach(),
                 self.output_v_mem.clone().detach(),
+                self.attention_v_mem.clone().detach(),
             )
 
         outputs = []
@@ -216,6 +237,7 @@ class AttentionalSpikingSSMLayer(nn.Module):
             x_t = x[:, t, :, :]
             state_transition = F.linear(h, self.A)
 
+            # アテンション計算 (ここは従来通り)
             q = self.q_proj(h).view(batch_size * seq_len, self.n_head, self.d_head)
             k, v = self.kv_proj(x_t).chunk(2, dim=-1)
             k = k.contiguous().view(batch_size * seq_len, self.n_head, self.d_head)
@@ -232,18 +254,34 @@ class AttentionalSpikingSSMLayer(nn.Module):
                 .contiguous()
                 .view(batch_size, seq_len, self.d_state)
             )
+            
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+            # アテンション出力をスパイクに変換 (STDPのシナプス前スパイク)
+            attended_spikes, attention_v = self.attention_lif(attended_v, attention_v)
+            
+            # STDPシナプスを通過
+            state_update_from_attention = self.out_proj(attended_spikes)
 
-            state_update = state_transition + self.out_proj(attended_v)
+            state_update = state_transition + state_update_from_attention
+            
+            # 状態を更新 (STDPのシナプス後スパイク)
             h, state_v = self.state_lif(state_update, state_v)
+
+            # 学習中にSTDP則に基づいて重みを更新
+            if self.training:
+                self.out_proj.update_weights(pre_spikes=attended_spikes, post_spikes=h)
+            # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
             output_potential = F.linear(h, self.C)
             out_spike, output_v = self.output_lif(output_potential, output_v)
             outputs.append(out_spike)
 
-        self.h_state, self.state_v_mem, self.output_v_mem = (
+        # 次の推論のために状態を保存
+        self.h_state, self.state_v_mem, self.output_v_mem, self.attention_v_mem = (
             h.detach(),
             state_v.detach(),
             output_v.detach(),
+            attention_v.detach(),
         )
         return torch.stack(outputs, dim=1)
 
