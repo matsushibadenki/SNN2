@@ -91,7 +91,7 @@ class SelfEvolvingAgent(AutonomousAgent):
         # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         # スパイク数が多すぎる場合、正則化を強める提案
         spike_match = re.search(r"'avg_spikes_per_sample': ([\d.]+)", analysis)
-        if spike_match and float(spike_match.group(1)) > 1000.0:
+        if spike_match is not None and float(spike_match.group(1)) > 1000.0:
             proposal = {
                 "file_path": "configs/base_config.yaml",
                 "action": "replace",
@@ -101,7 +101,7 @@ class SelfEvolvingAgent(AutonomousAgent):
         # 精度が低い場合、学習率を少し下げる提案
         elif "accuracy" in analysis:
             accuracy_match = re.search(r"'accuracy': ([\d.]+)", analysis)
-            if accuracy_match and float(accuracy_match.group(1)) < 0.8:
+            if accuracy_match is not None and float(accuracy_match.group(1)) < 0.8:
                  proposal = {
                     "file_path": "configs/base_config.yaml",
                     "action": "replace",
@@ -134,7 +134,7 @@ class SelfEvolvingAgent(AutonomousAgent):
             with fileinput.FileInput(file_path, inplace=True) as file:
                 for line in file:
                     # 正規表現でターゲット行を検索し、置換
-                    if re.search(proposal["target_pattern"], line):
+                    if "target_pattern" in proposal and re.search(proposal["target_pattern"], line):
                         print(proposal["new_content"])
                     else:
                         print(line, end='')
@@ -253,3 +253,4 @@ class SelfEvolvingAgent(AutonomousAgent):
             self.revert_code_modification(proposal)
         
         print("="*65)
+
