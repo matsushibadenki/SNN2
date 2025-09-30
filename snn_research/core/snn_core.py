@@ -10,6 +10,7 @@
 # - mypyエラー解消のため、型ヒントを修正・追加。
 # - [改善] BreakthroughSNNのforwardパスを、より本格的なリカレント（RNN）形式の時系列処理に変更。
 # - [改善] 学習の安定化のため、SNNに適したLayerNormと残差接続を導入。
+# - [修正] mypyエラー解消のため、forwardメソッドの戻り値の型ヒントと実際の値をTensorに統一。
 
 import torch
 import torch.nn as nn
@@ -137,8 +138,8 @@ class BreakthroughSNN(nn.Module):
         
         states = [torch.zeros(batch_size, self.d_state, device=input_ids.device) for _ in range(self.num_layers)]
         
-        total_spikes = 0
-        total_mem_potential = 0
+        total_spikes = torch.tensor(0.0, device=input_ids.device)
+        total_mem_potential = torch.tensor(0.0, device=input_ids.device)
         all_logits = []
 
         # シーケンスを時間ステップとして順方向に処理
