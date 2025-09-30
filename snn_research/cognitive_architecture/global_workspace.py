@@ -13,7 +13,7 @@ class GlobalWorkspace:
     複数の専門家SNNモデルを管理し、思考の中核を担う。
     RAGシステムと連携して知識を活用する。
     """
-    def __init__(self):
+    def __init__(self) -> None:
         self.registry = ModelRegistry()
         self.memory = Memory()
         self.rag_system = RAGSystem()
@@ -44,9 +44,7 @@ class GlobalWorkspace:
         self.active_specialists[task_description] = engine
         return engine
 
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def process_sub_task(self, sub_task: str, context: str) -> Optional[str]:
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         """
         単一のサブタスクを実行する。
         専門家が見つからない場合は、RAGシステムに問い合わせる。
