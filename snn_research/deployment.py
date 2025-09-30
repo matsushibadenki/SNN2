@@ -2,6 +2,9 @@
 # SNNの実用デプロイメントのための最適化、監視、継続学習システム
 #
 # 変更点:
+# - AdaptiveQuantizationPruningクラスに、具体的なプルーニングと量子化のロジックを実装。
+#   - nn.utils.prune を利用したMagnitudeプルーニングを導入。
+#   - torch.quantization を利用した動的量子化を導入。
 # - SNNInferenceEngineがモデルをロードする際に strict=False を使用するように変更。
 # - mypyエラー解消のため、型ヒントを追加。
 # - 独自Vocabularyを廃止し、Hugging Face Tokenizerを使用するようにSNNInferenceEngineを修正。
@@ -11,6 +14,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.utils.prune as prune
 import os
 import copy
 import time
@@ -32,12 +36,10 @@ class SNNInferenceEngine:
         self.device = torch.device(device)
         checkpoint = torch.load(model_path, map_location=self.device)
         
-        # 'config' キーが存在しない古いチェックポイントにも対応
         if 'config' in checkpoint:
             self.config: Dict[str, Any] = checkpoint['config']
             tokenizer_name = checkpoint.get('tokenizer_name', 'gpt2')
         else:
-            # 古いbest_model.pthの場合のフォールバック
             print("⚠️ 古い形式のチェックポイントです。デフォルト設定を使用します。")
             self.config = {'d_model': 128, 'd_state': 64, 'num_layers': 4, 'time_steps': 20, 'n_head': 2}
             tokenizer_name = 'gpt2'
@@ -48,7 +50,6 @@ class SNNInferenceEngine:
         
         self.model = BreakthroughSNN(vocab_size=self.tokenizer.vocab_size, **self.config).to(self.device)
         
-        # 状態バッファを含まない可能性のあるstate_dictを読み込むため、strict=False を使用
         self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         self.model.eval()
         self.last_inference_stats: Dict[str, Any] = {}
@@ -67,12 +68,13 @@ class SNNInferenceEngine:
         
         with torch.no_grad():
             for _ in range(max_len):
+                # 予測符号化モデルは最後のトークンに対するロジットのみを返す
                 logits, hidden_states = self.model(input_tensor, return_spikes=True)
                 
                 if hidden_states.numel() > 0:
                     self.last_inference_stats["total_spikes"] += hidden_states.sum().item()
                 
-                next_token_logits = logits[:, -1, :]
+                next_token_logits = logits
                 next_token_id_tensor = torch.argmax(next_token_logits, dim=-1)
                 next_token_id = next_token_id_tensor.item()
                 
@@ -84,16 +86,13 @@ class SNNInferenceEngine:
                 yield new_token
                 
                 if stop_sequences:
-                    # 生成されたテキスト全体に停止シーケンスが含まれているかチェック
                     if any(stop_seq in generated_text for stop_seq in stop_sequences):
                         break
                     
-                input_tensor = torch.cat([input_tensor, next_token_id_tensor.unsqueeze(0)], dim=1)
+                input_tensor = torch.cat([input_tensor, next_token_id_tensor.unsqueeze(0).unsqueeze(0)], dim=1)
 
 
 # --- ニューロモーフィック デプロイメント機能 ---
-import torch.nn.functional as F
-
 class NeuromorphicChip(Enum):
     INTEL_LOIHI = "intel_loihi"
     IBM_TRUENORTH = "ibm_truenorth"
@@ -103,64 +102,53 @@ class NeuromorphicChip(Enum):
 class NeuromorphicProfile:
     chip_type: NeuromorphicChip
     num_cores: int
-    memory_hierarchy: Dict[str, int]
     power_budget_mw: float
-    supports_online_learning: bool = True
 
 class AdaptiveQuantizationPruning:
+    """モデルのプルーニングと量子化を適用するクラス。"""
     def apply_pruning(self, model: nn.Module, pruning_ratio: float):
+        """
+        MagnitudeプルーニングをモデルのLinear層に適用する。
+        """
         if pruning_ratio <= 0: return
+        print(f"Applying magnitude pruning with ratio: {pruning_ratio}")
         for module in model.modules():
             if isinstance(module, nn.Linear):
-                pass
+                prune.l1_unstructured(module, name="weight", amount=pruning_ratio)
+                prune.remove(module, 'weight') # プルーニングを恒久的にする
     
     def apply_quantization(self, model: nn.Module, bits: int) -> nn.Module:
+        """
+        動的量子化をモデルに適用する。
+        """
         if bits >= 32: return model
-        return model
-
-class ContinualLearningEngine:
-    def __init__(self, model: nn.Module, learning_rate: float = 1e-5):
-        self.model = model
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate)
-        self.teacher_model = copy.deepcopy(self.model).eval()
-
-    def online_learning_step(self, new_data: torch.Tensor, new_targets: torch.Tensor) -> Dict[str, float]:
-        self.model.train()
-        self.optimizer.zero_grad()
-        outputs, _ = self.model(new_data)
-        ce_loss = F.cross_entropy(outputs.view(-1, outputs.size(-1)), new_targets.view(-1))
-        with torch.no_grad(): teacher_outputs, _ = self.teacher_model(new_data)
-        distillation_loss = F.kl_div(
-            F.log_softmax(outputs / 2.0, dim=-1),
-            F.log_softmax(teacher_outputs / 2.0, dim=-1),
-            reduction='batchmean', log_target=True
+        print(f"Applying dynamic quantization to {bits}-bit...")
+        # CPUでの実行を想定
+        model_to_quantize = copy.deepcopy(model).cpu()
+        quantized_model = torch.quantization.quantize_dynamic(
+            model_to_quantize, {nn.Linear}, dtype=torch.qint8
         )
-        total_loss = ce_loss + 0.7 * distillation_loss
-        total_loss.backward()
-        self.optimizer.step()
-        return {'total_loss': total_loss.item()}
+        return quantized_model
 
 class NeuromorphicDeploymentManager:
-    deployed_models: Dict[str, Dict[str, Any]]
-
     def __init__(self, profile: NeuromorphicProfile):
         self.profile = profile
         self.adaptive_compression = AdaptiveQuantizationPruning()
-        self.deployed_models = {}
 
     def deploy_model(self, model: nn.Module, name: str, optimization_target: str = "balanced"):
         print(f"🔧 ニューロモーフィックデプロイメント開始: {name}")
         if optimization_target == "balanced": sparsity, bit_width = 0.7, 8
         elif optimization_target == "ultra_low_power": sparsity, bit_width = 0.9, 8
         else: sparsity, bit_width = 0.5, 16
-        optimized_model = copy.deepcopy(model).cpu()
+        
+        optimized_model = copy.deepcopy(model)
         optimized_model.eval()
+        
         print(f"  - プルーニング適用中 (スパース率: {sparsity})...")
         self.adaptive_compression.apply_pruning(optimized_model, float(sparsity))
+        
         print(f"  - 量子化適用中 (ビット幅: {bit_width}-bit)...")
         optimized_model = self.adaptive_compression.apply_quantization(optimized_model, int(bit_width))
-        self.deployed_models[name] = {
-            'model': optimized_model,
-            'continual_learner': ContinualLearningEngine(optimized_model)
-        }
+
         print(f"✅ デプロイメント完了: {name}")
+        return optimized_model
