@@ -7,6 +7,7 @@
 # - 検証データセットでモデル性能を評価する `evaluate` メソッドを実装。
 # - 検証結果に基づき、最も性能の良いモデルを `best_model.pth` として保存する機能を追加。
 # - チェックポイントの保存・読み込みロジックを修正し、バッファを除外して再開時のサイズミスマッチエラーを解消。
+# - 損失関数にモデル全体を渡し、スパース性などのハードウェアを意識した正則化を可能に。
 
 import torch
 import torch.nn as nn
@@ -32,7 +33,6 @@ class BreakthroughTrainer:
         self.criterion = criterion
         self.grad_clip_norm = grad_clip_norm
         self.rank = rank
-        # mpsはGradScalerをサポートしないため、use_ampを無効化
         self.use_amp = use_amp and self.device != 'mps'
         
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
@@ -50,11 +50,12 @@ class BreakthroughTrainer:
 
         input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
         
-        # mpsでもautocastは利用可能
         with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
             with torch.set_grad_enabled(is_train):
                 logits, spike_data = self.model(input_ids, return_spikes=True)
-                loss_dict = self.criterion(logits, target_ids, spike_data)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+                loss_dict = self.criterion(logits, target_ids, spike_data, self.model)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         if is_train:
             self.optimizer.zero_grad()
@@ -200,12 +201,15 @@ class DistillationTrainer(BreakthroughTrainer):
             with torch.set_grad_enabled(is_train):
                 student_logits, spike_data = self.model(student_input, return_spikes=True)
                 assert isinstance(self.criterion, DistillationLoss)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 loss_dict = self.criterion(
                     student_logits=student_logits,
                     teacher_logits=teacher_logits,
                     targets=student_target,
-                    spikes=spike_data
+                    spikes=spike_data,
+                    model=self.model
                 )
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         
         if is_train:
             self.optimizer.zero_grad()
