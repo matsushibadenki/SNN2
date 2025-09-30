@@ -3,7 +3,7 @@
 
 # 共通設定
 seed: 42
-device: "mps" # デフォルトのデバイスを "mps" に変更
+device: "auto" # 実行環境に応じて最適なデバイス (cuda, mps, cpu) を自動選択
 
 # データ設定
 data:
@@ -51,7 +51,7 @@ training:
 
 # 推論/アプリ設定
 inference:
-  device: "mps" # 推論デバイスも "mps" に変更
+  device: "auto" # 推論デバイスも自動選択
   max_len: 50
 
 # Gradioアプリ設定
