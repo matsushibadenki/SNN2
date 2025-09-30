@@ -12,6 +12,7 @@
 # - `stop_sequences` のロジックを改善し、生成テキスト全体に含まれるかをチェックするようにした。
 # - 推論時の総スパイク数を計測し、インスタンス変数 `last_inference_stats` に保存する機能を追加。
 # - [改善] generateメソッドに、Top-KおよびTop-P (Nucleus)サンプリングのデコーディング戦略を追加。
+# - [修正] mypyエラー解消のため、_sample_next_tokenの戻り値をintにキャストし、型ヒントを修正。
 
 import torch
 import torch.nn as nn
@@ -77,8 +78,8 @@ class SNNInferenceEngine:
             logits[indices_to_remove] = -float("Inf")
         
         probs = F.softmax(logits, dim=-1)
-        next_token_id = torch.multinomial(probs, num_samples=1).item()
-        return next_token_id
+        next_token_id = torch.multinomial(probs, num_samples=1)
+        return int(next_token_id.item())
 
     def generate(self, start_text: str, max_len: int, stop_sequences: Optional[List[str]] = None,
                  top_k: int = 50, top_p: float = 0.95, temperature: float = 0.8) -> Iterator[str]:
