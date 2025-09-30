@@ -82,6 +82,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         num_layers=config.model.num_layers,
         time_steps=config.model.time_steps,
         n_head=config.model.n_head,
+        neuron_config=config.model.neuron, # ニューロン設定を渡す
     )
     
     # --- 認知アーキテクチャ ---
@@ -89,7 +90,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         AstrocyteNetwork,
         snn_model=snn_model
     )
-
+    
     # --- 学習コンポーネント ---
     optimizer = providers.Factory(
         AdamW,
