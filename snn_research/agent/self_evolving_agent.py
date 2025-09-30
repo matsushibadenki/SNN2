@@ -5,11 +5,13 @@
 # - AutonomousAgentを継承し、自己進化の能力を追加。
 # - 自己参照RAG: 自身のソースコードを知識ベースとして参照する。
 # - ベンチマーク駆動ループ: コード変更が性能に与える影響を予測・評価する。
-# - 自律的コード修正: 性能向上が見込めるコードの修正案を生成する。
+# - 自律的コード修正: 性能向上が見込めるコードの修正案を生成し、適用する。
+# - [改善] 修正案を構造化データとして生成し、実際にファイルを書き換える機能を実装。
 
 import os
 import subprocess
-from typing import Dict, Any, Optional
+import fileinput
+from typing import Dict, Any, Optional, List
 
 from .autonomous_agent import AutonomousAgent
 from snn_research.cognitive_architecture.rag_snn import RAGSystem
@@ -55,33 +57,66 @@ class SelfEvolvingAgent(AutonomousAgent):
         self.memory.add_entry("PERFORMANCE_REFLECTION_ENDED", {"analysis": analysis})
         return analysis
 
-    def generate_code_modification_proposal(self, analysis: str) -> Optional[str]:
+    def generate_code_modification_proposal(self, analysis: str) -> Optional[Dict[str, str]]:
         """
-        分析結果に基づき、具体的なコード修正案を生成する。
-        将来的には、この部分が専門のコード生成SNNによって行われる。
+        分析結果に基づき、具体的なコード修正案を構造化データとして生成する。
         """
         self.memory.add_entry("CODE_MODIFICATION_PROPOSAL_STARTED", {"analysis": analysis})
         
-        # 現在はルールベースで簡単な提案を生成するプレースホルダー
         proposal = None
-        if "loss" in analysis.lower() and "weight" in analysis.lower():
-            proposal = (
-                "提案: `configs/base_config.yaml` の `loss.spike_reg_weight` "
-                "または `loss.sparsity_reg_weight` の値を調整して、"
-                "正則化の強度を変更することを検討します。"
-            )
-        elif "layer" in analysis.lower() and "performance" in analysis.lower():
-            proposal = (
-                "提案: `configs/models/` 以下のモデル設定ファイルで、"
-                "`num_layers` や `d_model` を増やし、モデルの表現力を向上させることを検討します。"
-            )
+        # スパイク数が多すぎる場合、正則化を強める提案
+        if "avg_spikes_per_sample" in analysis and "1000.0" in analysis: # ダミー条件
+            proposal = {
+                "file_path": "configs/base_config.yaml",
+                "action": "replace",
+                "target": "    spike_reg_weight: 0.01",
+                "new_content": "    spike_reg_weight: 0.05 # Increased by agent"
+            }
+        # 精度が低い場合、モデルを大きくする提案
+        elif "accuracy" in analysis and "0.75" in analysis: # ダミー条件
+             proposal = {
+                "file_path": "configs/models/medium.yaml",
+                "action": "replace",
+                "target": "  num_layers: 8",
+                "new_content": "  num_layers: 10 # Increased by agent"
+            }
             
         self.memory.add_entry("CODE_MODIFICATION_PROPOSAL_ENDED", {"proposal": proposal})
         return proposal
 
+    def apply_code_modification(self, proposal: Dict[str, str]) -> bool:
+        """
+        提案されたコード修正をファイルシステムに適用する。
+        """
+        self.memory.add_entry("CODE_MODIFICATION_APPLY_STARTED", {"proposal": proposal})
+        file_path = proposal["file_path"]
+        
+        if not os.path.exists(file_path):
+            print(f"❌ 修正対象ファイルが見つかりません: {file_path}")
+            self.memory.add_entry("CODE_MODIFICATION_APPLY_FAILED", {"reason": "file_not_found"})
+            return False
+
+        try:
+            print(f"📝 ファイルを修正中: {file_path}")
+            # fileinputを使ってファイルをインプレースで置換
+            with fileinput.FileInput(file_path, inplace=True, backup='.bak') as file:
+                for line in file:
+                    if proposal["target"] in line:
+                        print(proposal["new_content"], end='\n')
+                    else:
+                        print(line, end='')
+            
+            print("✅ ファイルの修正が完了しました。バックアップが `.bak` として作成されました。")
+            self.memory.add_entry("CODE_MODIFICATION_APPLY_ENDED", {"file_path": file_path})
+            return True
+        except Exception as e:
+            print(f"❌ ファイル修正中にエラーが発生しました: {e}")
+            self.memory.add_entry("CODE_MODIFICATION_APPLY_FAILED", {"reason": str(e)})
+            return False
+
     def run_evolution_cycle(self, task_description: str, initial_metrics: Dict[str, Any]):
         """
-        単一の自己進化サイクル（内省→提案→検証）を実行する。
+        単一の自己進化サイクル（内省→提案→適用→検証）を実行する。
         """
         print("\n" + "="*20 + "🧬 自己進化サイクル開始 🧬" + "="*20)
         
@@ -93,17 +128,24 @@ class SelfEvolvingAgent(AutonomousAgent):
         proposal = self.generate_code_modification_proposal(analysis)
         if not proposal:
             print("【結論】現時点では有効な改善案を生成できませんでした。")
+            print("="*65)
             return
 
         print(f"【改善提案】\n{proposal}")
         
-        # 3. 検証 (この部分はシミュレーションまたは実際の学習・評価が必要)
+        # 3. 修正の適用
+        if not self.apply_code_modification(proposal):
+            print("【結論】コード修正の適用に失敗したため、サイクルを中断します。")
+            print("="*65)
+            return
+        
+        # 4. 検証 (この部分はシミュレーションまたは実際の学習・評価が必要)
         print("【検証】提案された変更を適用し、性能が向上するかを検証する必要があります。(このステップは現在シミュレーションです)")
         
         # (将来的な実装)
-        # 1. 提案に基づいてソースコードや設定ファイルを実際に変更
-        # 2. `run_benchmark.py` などをサブプロセスで実行
-        # 3. 結果をパースし、性能が向上したかを評価
-        # 4. 性能が向上した場合、変更を恒久的なものにする (例: git commit)
+        # 1. `run_benchmark.py` などをサブプロセスで実行し、新しい性能メトリクスを取得
+        # 2. 新しいメトリクスが `initial_metrics` を上回っているか評価
+        # 3. 性能が向上した場合、変更を恒久的なものにする (例: git commit)
+        # 4. 向上しなかった場合、.bakファイルから変更を元に戻す
         
         print("="*65)
