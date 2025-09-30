@@ -1,5 +1,5 @@
-# /snn_research/cognitive_architecture/emergent_system.py
-# Phase 4: 複数の専門家SNNを統合し、新たな概念を創発させるシステム
+# matsushibadenki/snn2/snn_research/cognitive_architecture/emergent_system.py
+# Phase 6: 複数の専門家SNNを統合し、新たな概念を創発させるシステム
 #
 # 機能:
 # - 複数の専門家モデルからの応答を統合し、より高次の判断を下す。
@@ -31,6 +31,7 @@ class EmergentSystem:
         for model_info in candidate_models:
             path = model_info['model_path']
             if path not in self.active_specialists:
+                # CPUでロードしてメモリを節約
                 self.active_specialists[path] = SNNInferenceEngine(model_path=path, device="cpu")
             loaded_engines.append(self.active_specialists[path])
         return loaded_engines
@@ -53,8 +54,9 @@ class EmergentSystem:
                 full_response += chunk
             
             # 応答の信頼度を計算 (ダミーロジック)
-            # 実際の信頼度は、モデル出力のlogitのエントロピーなどから計算する
-            confidence = 1.0 - (1 / (1 + engine.last_inference_stats.get("total_spikes", 1000)))
+            # スパイク数が少ないほど効率的で確信度が高いと仮定
+            total_spikes = engine.last_inference_stats.get("total_spikes", 1000)
+            confidence = 1.0 - (1 / (1 + (1000 / (total_spikes + 1e-5))))
             
             print(f"  - 専門家 {i+1} の応答: 「{full_response.strip()}」 (信頼度: {confidence:.2f})")
             responses.append({"text": full_response.strip(), "confidence": confidence})
