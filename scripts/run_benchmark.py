@@ -5,10 +5,12 @@
 # - ロードマップ フェーズ2「2.3. アーキテクチャの進化」を評価。
 # - 最新の `BreakthroughSNN` モデルをバックボーンとして使用し、その性能を直接測定する。
 # - 旧式の `SNNClassifier` を廃止し、常にコアアーキテクチャの最新の性能を評価できるようにする。
+# - [改善] 特定の学習済みモデルを直接評価するための --model_path 引数を追加。
 
 import os
 import json
 import time
+import argparse
 import pandas as pd  # type: ignore
 from datasets import load_dataset  # type: ignore
 from sklearn.metrics import accuracy_score  # type: ignore
@@ -84,15 +86,19 @@ class SNNClassifier(nn.Module):
         return logits, spikes
 
 # --- 4. 実行関数 (モデル呼び出し部分を更新) ---
-def run_benchmark_for_model(model_type: str, data_paths: dict, tokenizer: PreTrainedTokenizerBase, model_params: dict) -> Dict[str, Any]:
+def run_benchmark_for_model(
+    model_type: str,
+    data_paths: dict,
+    tokenizer: PreTrainedTokenizerBase,
+    model_params: dict,
+    model_path: str = None
+) -> Dict[str, Any]:
     print("\n" + "="*20 + f" 🚀 Starting {model_type} Benchmark " + "="*20)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    dataset_train = ClassificationDataset(data_paths['train'])
     dataset_val = ClassificationDataset(data_paths['validation'])
     
     collate_fn = create_collate_fn_for_classification(tokenizer)
-    loader_train = DataLoader(dataset_train, batch_size=32, shuffle=True, collate_fn=collate_fn)
     loader_val = DataLoader(dataset_val, batch_size=32, shuffle=False, collate_fn=collate_fn)
 
     vocab_size = tokenizer.vocab_size
@@ -103,26 +109,35 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, tokenizer: PreTra
     else: # ANN
         model = ANNBaselineModel(vocab_size=vocab_size, **model_params, num_classes=2).to(device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
-    criterion = nn.CrossEntropyLoss()
-    
+    # --- モデルのロードまたは学習 ---
+    if model_path and os.path.exists(model_path):
+        print(f"💾 学習済みモデルをロードします: {model_path}")
+        checkpoint = torch.load(model_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    else:
+        print("🏋️ モデルをスクラッチから学習します...")
+        dataset_train = ClassificationDataset(data_paths['train'])
+        loader_train = DataLoader(dataset_train, batch_size=32, shuffle=True, collate_fn=collate_fn)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+        criterion = nn.CrossEntropyLoss()
+        
+        for epoch in range(3):
+            model.train()
+            for input_ids, attention_mask, targets in tqdm(loader_train, desc=f"{model_type} Epoch {epoch+1}"):
+                input_ids, attention_mask, targets = input_ids.to(device), attention_mask.to(device), targets.to(device)
+                optimizer.zero_grad()
+                
+                if model_type == 'SNN':
+                    outputs, _ = model(input_ids, attention_mask=attention_mask)
+                else:
+                    outputs = model(input_ids, src_padding_mask=(attention_mask == 0))
+
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+
     print(f"{model_type} Model Parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-    for epoch in range(3):
-        model.train()
-        for input_ids, attention_mask, targets in tqdm(loader_train, desc=f"{model_type} Epoch {epoch+1}"):
-            input_ids, attention_mask, targets = input_ids.to(device), attention_mask.to(device), targets.to(device)
-            optimizer.zero_grad()
-            
-            if model_type == 'SNN':
-                outputs, _ = model(input_ids, attention_mask=attention_mask)
-            else:
-                outputs = model(input_ids, src_padding_mask=(attention_mask == 0))
-
-            loss = criterion(outputs, targets)
-            loss.backward()
-            optimizer.step()
-
+    
     model.eval()
     true_labels: List[int] = []
     pred_labels: List[int] = []
@@ -154,8 +169,12 @@ def run_benchmark_for_model(model_type: str, data_paths: dict, tokenizer: PreTra
         
     return {"model": model_type, "accuracy": accuracy, "avg_latency_ms": avg_latency_ms, "avg_spikes_per_sample": avg_spikes_per_sample}
 
-# --- 5. メイン実行ブロック (変更なし) ---
+# --- 5. メイン実行ブロック (引数処理を追加) ---
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="SNN vs ANN Benchmark Script")
+    parser.add_argument("--model_path", type=str, help="評価対象の学習済みSNNモデルのパス。指定しない場合はSNNとANNをスクラッチから学習します。")
+    args = parser.parse_args()
+
     pd.set_option('display.precision', 4)
     data_paths = prepare_sst2_data()
     
@@ -165,12 +184,22 @@ if __name__ == "__main__":
     print(f"✅ Tokenizer loaded. Vocab size: {tokenizer.vocab_size}")
 
     snn_params = {'d_model': 64, 'd_state': 32, 'num_layers': 2, 'time_steps': 64, 'n_head': 2}
-    snn_results = run_benchmark_for_model('SNN', data_paths, tokenizer, snn_params)
-
-    ann_params = {'d_model': 64, 'd_hid': 128, 'nlayers': 2, 'nhead': 2}
-    ann_results = run_benchmark_for_model('ANN', data_paths, tokenizer, ann_params)
     
-    print("\n\n" + "="*25 + " 🏆 Final Benchmark Results " + "="*25)
-    results_df = pd.DataFrame([snn_results, ann_results])
-    print(results_df.to_string(index=False))
-    print("="*75)
+    if args.model_path:
+        # 指定されたSNNモデルのみを評価
+        print(f"--- 特定のSNNモデルの評価を開始: {args.model_path} ---")
+        snn_results = run_benchmark_for_model('SNN', data_paths, tokenizer, snn_params, model_path=args.model_path)
+        print("\n\n" + "="*25 + " 🏆 Final Benchmark Results " + "="*25)
+        results_df = pd.DataFrame([snn_results])
+        print(results_df.to_string(index=False))
+        print("="*75)
+    else:
+        # SNNとANNの両方を学習して比較
+        snn_results = run_benchmark_for_model('SNN', data_paths, tokenizer, snn_params)
+        ann_params = {'d_model': 64, 'd_hid': 128, 'nlayers': 2, 'nhead': 2}
+        ann_results = run_benchmark_for_model('ANN', data_paths, tokenizer, ann_params)
+        
+        print("\n\n" + "="*25 + " 🏆 Final Benchmark Results " + "="*25)
+        results_df = pd.DataFrame([snn_results, ann_results])
+        print(results_df.to_string(index=False))
+        print("="*75)
