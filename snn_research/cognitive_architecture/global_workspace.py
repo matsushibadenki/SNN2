@@ -2,10 +2,12 @@
 # Phase 3: グローバル・ワークスペース
 
 from snn_research.distillation.model_registry import ModelRegistry
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 from snn_research.deployment import SNNInferenceEngine
 from snn_research.agent.memory import Memory
 from .rag_snn import RAGSystem
 from typing import Optional, Dict, Any
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 import torch
 
 class GlobalWorkspace:
@@ -19,7 +21,9 @@ class GlobalWorkspace:
         self.rag_system = RAGSystem()
         self.active_specialists: Dict[str, SNNInferenceEngine] = {}
 
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def _load_specialist(self, task_description: str) -> Optional[SNNInferenceEngine]:
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         """
         指定されたタスクの専門家モデルを検索し、アクティブな推論エンジンとしてロードする。
         """
