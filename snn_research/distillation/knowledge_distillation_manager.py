@@ -5,6 +5,7 @@
 # - ModelRegistryと連携し、重複学習の回避と学習結果の自動登録を行うようにした。
 # - ベンチマーク結果の出力を正規表現でパースする機能を追加。
 # - 学習済みモデルをタスク固有のパスに保存するように変更。
+# - [改善] 評価時に、学習済みのモデルパスをベンチマークスクリプトに渡すように修正。
 
 import os
 import re
@@ -75,20 +76,22 @@ class KnowledgeDistillationManager:
         """学習済みモデルを評価し、結果を登録簿に登録する。"""
         print("📊 学習済みSNNモデルの性能評価を開始します...")
         
-        # 学習済みモデルのパスをベンチマークスクリプトに渡す必要がある (将来的な改善点)
-        benchmark_output = self._run_command(["python", "-m", "scripts.run_benchmark"])
-        metrics = self._parse_benchmark_results(benchmark_output)
-        
-        if not metrics:
-            print("⚠️ 性能指標を取得できなかったため、モデル登録をスキップします。")
-            return
-
-        # best_model.pth をタスク固有のディレクトリに移動/コピー
         best_model_src = os.path.join(task_run_dir, 'best_model.pth')
         
         if not os.path.exists(best_model_src):
              print(f"⚠️ ベストモデルが見つかりません: {best_model_src}")
              return
+
+        # 学習したモデルのパスを指定してベンチマークを実行
+        benchmark_output = self._run_command([
+            "python", "scripts/run_benchmark.py",
+            "--model_path", best_model_src
+        ])
+        metrics = self._parse_benchmark_results(benchmark_output)
+        
+        if not metrics:
+            print("⚠️ 性能指標を取得できなかったため、モデル登録をスキップします。")
+            return
 
         self.registry.register_model(
             task_description=task_description,
