@@ -6,6 +6,7 @@
 # - ベンチマーク結果の出力を正規表現でパースする機能を追加。
 # - 学習済みモデルをタスク固有のパスに保存するように変更。
 # - [改善] 評価時に、学習済みのモデルパスをベンチマークスクリプトに渡すように修正。
+# - [改善] run_on_demand_pipelineにforce_retrain引数を追加し、モデル登録簿のチェックを行うように修正。
 
 import os
 import re
@@ -31,6 +32,7 @@ class KnowledgeDistillationManager:
 
     def _run_command(self, command: list[str]) -> str:
         """サブプロセスでコマンドを実行し、標準出力を返す。"""
+        # (既存のコード)
         print("\n" + "="*20 + f" 🚀 EXECUTING: {' '.join(command)} " + "="*20)
         try:
             result = subprocess.run(
@@ -53,6 +55,7 @@ class KnowledgeDistillationManager:
 
     def _parse_benchmark_results(self, output: str) -> Dict[str, float]:
         """ベンチマークスクリプトの出力からSNNの性能指標を抽出する。"""
+        # (既存のコード)
         metrics = {}
         try:
             # SNNの結果行を見つける (より柔軟な正規表現)
@@ -74,6 +77,7 @@ class KnowledgeDistillationManager:
 
     def _evaluate_and_register_model(self, task_description: str, task_run_dir: str):
         """学習済みモデルを評価し、結果を登録簿に登録する。"""
+        # (既存のコード)
         print("📊 学習済みSNNモデルの性能評価を開始します...")
         
         best_model_src = os.path.join(task_run_dir, 'best_model.pth')
@@ -101,15 +105,25 @@ class KnowledgeDistillationManager:
         )
         print("🏆 性能評価とモデル登録が完了しました。")
 
-    def run_on_demand_pipeline(self, task_description: str, unlabeled_data_path: str, teacher_model_name: str):
+    def run_on_demand_pipeline(self, task_description: str, unlabeled_data_path: str, teacher_model_name: str, force_retrain: bool = False):
         """未知のタスクに対し、自律的に専門家SNNを生成するパイプライン。"""
+        
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        # Step 0: Check model registry unless retraining is forced
+        if not force_retrain:
+            existing_models = self.registry.find_models_for_task(task_description)
+            if existing_models:
+                print(f"✅ タスク '{task_description}' の学習済みモデルが既に存在します。学習をスキップします。")
+                return
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+
         task_id = task_description.replace(' ', '_').lower()
         distillation_data_dir = f"precomputed_data/{task_id}"
         task_run_dir = f"runs/specialists/{task_id}" # タスク固有のログ/モデル保存ディレクトリ
 
         # --- ステップ1: 知識蒸留データの準備 ---
         self._run_command([
-            "python", "-m", "scripts.prepare_distillation_data",
+            "python", "scripts/prepare_distillation_data.py",
             "--input_file", unlabeled_data_path,
             "--output_dir", distillation_data_dir,
             "--teacher_model", teacher_model_name
