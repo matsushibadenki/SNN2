@@ -20,13 +20,10 @@ class HierarchicalPlanner:
     def __init__(self):
         self.workspace = GlobalWorkspace()
         self.memory = Memory()
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
         self.registry = ModelRegistry()
         # 将来的には、このプランナー自体が学習可能なSNNモデルになる
         # self.planner_snn = self.load_planner_model()
-        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
     def _create_plan(self, task_request: str) -> List[str]:
         """
         自然言語のタスク要求と、利用可能な専門家モデルのリストから、
@@ -43,19 +40,25 @@ class HierarchicalPlanner:
         print(f"  - 利用可能なスキル: {available_skills}")
 
         # 2. タスク要求の中に、利用可能なスキル名が含まれているかチェックし、計画を生成
-        #    将来的に、この部分は意味的類似性検索や学習済みプランナーSNNに置き換えられる
+        #    (将来的に、この部分は意味的類似性検索や学習済みプランナーSNNに置き換えられる)
         plan = []
         # ユーザーのリクエストの語順を尊重するため、単純なループでスキルを抽出
-        for skill in available_skills:
-            if skill in task_request:
-                plan.append(skill)
-        
-        # 順序が重要になる場合があるため、現時点では抽出された順序を維持する
         # (例：「要約して、分析して」と「分析して、要約して」は意味が違う)
+        temp_request = task_request.lower()
+        
+        # 簡易的な順序抽出
+        found_skills_with_indices = []
+        for skill in available_skills:
+            index = temp_request.find(skill.lower())
+            if index != -1:
+                found_skills_with_indices.append((index, skill))
+        
+        # 見つかった位置でソートし、計画を生成
+        found_skills_with_indices.sort()
+        plan = [skill for index, skill in found_skills_with_indices]
         
         self.memory.add_entry("PLAN_CREATED", {"request": task_request, "available_skills": available_skills, "plan": plan})
         return plan
-    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     def execute_task(self, task_request: str, context: str) -> Optional[str]:
         """
