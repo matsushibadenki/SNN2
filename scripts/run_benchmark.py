@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 # 最新のSNNアーキテクチャをインポート
 from snn_research.core.snn_core import BreakthroughSNN
@@ -91,7 +91,7 @@ def run_benchmark_for_model(
     data_paths: dict,
     tokenizer: PreTrainedTokenizerBase,
     model_params: dict,
-    model_path: str = None
+    model_path: Optional[str] = None
 ) -> Dict[str, Any]:
     print("\n" + "="*20 + f" 🚀 Starting {model_type} Benchmark " + "="*20)
     device = "cuda" if torch.cuda.is_available() else "cpu"
