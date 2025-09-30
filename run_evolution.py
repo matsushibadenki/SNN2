@@ -1,4 +1,4 @@
-# /run_evolution.py
+# matsushibadenki/snn2/run_evolution.py
 # Phase 5: 自己進化エージェントを起動し、メタ進化サイクルを実行するスクリプト
 
 import argparse
