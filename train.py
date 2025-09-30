@@ -22,6 +22,14 @@ from snn_research.data.datasets import DataFormat, get_dataset_class, Distillati
 
 torch.autograd.set_detect_anomaly(True)
 
+def get_auto_device() -> str:
+    """実行環境に最適なデバイスを自動的に選択する。"""
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
 def set_seed(seed: int):
     import random
     import numpy as np
@@ -121,11 +129,8 @@ def main():
     if is_distributed:
         device = f"cuda:{local_rank}"
     else:
-        device = container.config.device()
-        if device == "cuda" and not torch.cuda.is_available():
-            device = "mps" if torch.backends.mps.is_available() else "cpu"
-        elif device == "mps" and not torch.backends.mps.is_available():
-            device = "cpu"
+        config_device = container.config.device()
+        device = get_auto_device() if config_device == "auto" else config_device
     print(f"Process {rank if rank != -1 else 0}: Using device: {device}")
     
     model = container.snn_model().to(device)
