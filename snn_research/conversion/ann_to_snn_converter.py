@@ -82,7 +82,11 @@ class AnnToSnnConverter:
                     if isinstance(batch, (list, tuple)):
                         inputs = batch[0].to(self.device)
                     else:
-                        inputs = batch.to(self.device)
+                        if isinstance(batch, (list, tuple)):
+                            inputs = batch[0].to(self.device)
+                        else:
+                            inputs = batch.to(self.device)
+
                     # モデルを実行してAdaptiveLIFNeuron内の閾値更新ロジックをトリガー
                     self.snn_model(inputs)
 
