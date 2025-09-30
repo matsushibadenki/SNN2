@@ -34,6 +34,7 @@ training:
     ce_weight: 1.0
     spike_reg_weight: 0.01
     sparsity_reg_weight: 0.00001 # スパース性を促進する正則化項の重み
+    mem_reg_weight: 0.00001 # 膜電位の正則化項の重み
 
   # 蒸留学習設定
   distillation:
@@ -43,6 +44,7 @@ training:
       distill_weight: 0.7
       spike_reg_weight: 0.01
       sparsity_reg_weight: 0.00001
+      mem_reg_weight: 0.00001
       temperature: 2.0
 
 # 推論/アプリ設定
