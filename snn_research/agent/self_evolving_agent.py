@@ -35,6 +35,7 @@ class SelfEvolvingAgent(AutonomousAgent):
         """自己参照用ベクトルストアのセットアップ"""
         if not os.path.exists(self.self_reference_rag.vector_store_path):
             print("🧠 自己参照用ナレッジベースを構築しています...")
+            # プロジェクトルート全体を知識ベースとしてベクトル化
             self.self_reference_rag.setup_vector_store(knowledge_dir=self.project_root)
 
     def reflect_on_performance(self, task_description: str, metrics: Dict[str, Any]) -> str:
@@ -54,7 +55,7 @@ class SelfEvolvingAgent(AutonomousAgent):
         
         analysis = (
             f"考察: タスク「{task_description}」の性能指標は {metrics} でした。\n"
-            f"関連するコード断片:\n" + "\n---\n".join(relevant_code_snippets)
+            f"関連するコード断片:\n" + "\n---\n".join(doc for doc in relevant_code_snippets)
         )
         
         self.memory.add_entry("PERFORMANCE_REFLECTION_ENDED", {"analysis": analysis})
@@ -63,25 +64,26 @@ class SelfEvolvingAgent(AutonomousAgent):
     def generate_code_modification_proposal(self, analysis: str) -> Optional[Dict[str, str]]:
         """
         分析結果に基づき、具体的なコード修正案を構造化データとして生成する。
+        (注: この部分は現在ルールベースですが、将来的にはLLMに置き換え可能です)
         """
         self.memory.add_entry("CODE_MODIFICATION_PROPOSAL_STARTED", {"analysis": analysis})
         
         proposal = None
         # スパイク数が多すぎる場合、正則化を強める提案
-        if "avg_spikes_per_sample" in analysis and "1500.0" in analysis: # ダミー条件
+        if "avg_spikes_per_sample" in analysis and float(re.search(r"'avg_spikes_per_sample': ([\d.]+)", analysis).group(1)) > 1000.0:
             proposal = {
                 "file_path": "configs/base_config.yaml",
                 "action": "replace",
-                "target": "    spike_reg_weight: 0.01",
-                "new_content": "    spike_reg_weight: 0.05 # Increased by agent"
+                "target_pattern": r"spike_reg_weight:\s*[\d.]+",
+                "new_content": "    spike_reg_weight: 0.05 # Increased by agent to reduce spikes"
             }
-        # 精度が低い場合、モデルを大きくする提案
-        elif "accuracy" in analysis and "0.75" in analysis: # ダミー条件
+        # 精度が低い場合、学習率を少し下げる提案
+        elif "accuracy" in analysis and float(re.search(r"'accuracy': ([\d.]+)", analysis).group(1)) < 0.8:
              proposal = {
-                "file_path": "configs/models/medium.yaml",
+                "file_path": "configs/base_config.yaml",
                 "action": "replace",
-                "target": "  num_layers: 8",
-                "new_content": "  num_layers: 10 # Increased by agent"
+                "target_pattern": r"learning_rate:\s*[\d.]+",
+                "new_content": "  learning_rate: 0.0003 # Decreased by agent for stable learning"
             }
             
         self.memory.add_entry("CODE_MODIFICATION_PROPOSAL_ENDED", {"proposal": proposal})
@@ -92,7 +94,7 @@ class SelfEvolvingAgent(AutonomousAgent):
         提案されたコード修正をファイルシステムに適用する。
         """
         self.memory.add_entry("CODE_MODIFICATION_APPLY_STARTED", {"proposal": proposal})
-        file_path = proposal["file_path"]
+        file_path = os.path.join(self.project_root, proposal["file_path"])
         
         if not os.path.exists(file_path):
             print(f"❌ 修正対象ファイルが見つかりません: {file_path}")
@@ -101,69 +103,68 @@ class SelfEvolvingAgent(AutonomousAgent):
 
         try:
             print(f"📝 ファイルを修正中: {file_path}")
-            # fileinputを使ってファイルをインプレースで置換
-            with fileinput.FileInput(file_path, inplace=True, backup='.bak') as file:
+            backup_path = file_path + ".bak"
+            # 変更前にバックアップを作成
+            shutil.copyfile(file_path, backup_path)
+
+            with fileinput.FileInput(file_path, inplace=True) as file:
                 for line in file:
-                    if proposal["target"] in line:
-                        print(proposal["new_content"], end='\n')
+                    # 正規表現でターゲット行を検索し、置換
+                    if re.search(proposal["target_pattern"], line):
+                        print(proposal["new_content"])
                     else:
                         print(line, end='')
             
-            print("✅ ファイルの修正が完了しました。バックアップが `.bak` として作成されました。")
+            print(f"✅ ファイルの修正が完了しました。バックアップが '{backup_path}' として作成されました。")
             self.memory.add_entry("CODE_MODIFICATION_APPLY_ENDED", {"file_path": file_path})
             return True
         except Exception as e:
             print(f"❌ ファイル修正中にエラーが発生しました: {e}")
             self.memory.add_entry("CODE_MODIFICATION_APPLY_FAILED", {"reason": str(e)})
+            self.revert_code_modification(proposal) # 失敗した場合は復元を試みる
             return False
 
-    def revert_code_modification(self, proposal: Dict[str, str]) -> bool:
+    def revert_code_modification(self, proposal: Dict[str, str]):
         """
         バックアップファイルを使って、適用した修正を元に戻す。
         """
         self.memory.add_entry("CODE_REVERT_STARTED", {"proposal": proposal})
-        file_path = proposal["file_path"]
+        file_path = os.path.join(self.project_root, proposal["file_path"])
         backup_path = file_path + ".bak"
 
         if not os.path.exists(backup_path):
             print(f"❌ バックアップファイルが見つかりません: {backup_path}")
             self.memory.add_entry("CODE_REVERT_FAILED", {"reason": "backup_not_found"})
-            return False
-        
+            return
+
         try:
             print(f"⏪ 変更を元に戻しています: {file_path}")
             shutil.move(backup_path, file_path)
             print("✅ 変更を元に戻しました。")
             self.memory.add_entry("CODE_REVERT_ENDED", {"file_path": file_path})
-            return True
         except Exception as e:
             print(f"❌ ファイルの復元中にエラーが発生しました: {e}")
             self.memory.add_entry("CODE_REVERT_FAILED", {"reason": str(e)})
-            return False
 
     def verify_performance_improvement(self, initial_metrics: Dict[str, Any]) -> bool:
         """
-        ベンチマークを実行し、性能が向上したかを確認する。
+        ベンチマークスクリプトを実行し、性能が向上したかを確認する。
         """
         self.memory.add_entry("PERFORMANCE_VERIFICATION_STARTED", {})
         print("📊 変更後の性能をベンチマークで検証します...")
 
         try:
-            # 実際のプロジェクトでは `scripts/run_benchmark.py` を実行する想定
-            # ここではダミーの出力でシミュレートする
-            # output = subprocess.check_output(["python", "scripts/run_benchmark.py"]).decode('utf-8')
+            # 実際のベンチマークスクリプトを実行
+            output = subprocess.check_output(
+                ["python", "scripts/run_benchmark.py"], 
+                encoding='utf-8',
+                text=True
+            ).strip()
+            print("--- Benchmark Output ---")
+            print(output)
+            print("----------------------")
             
-            # --- シミュレーション ---
-            # 性能が向上したダミー出力
-            output = "SNN      0.80     1200.5     1450.0"
-            print("  - (シミュレーション) ベンチマーク実行完了。")
-            # --------------------
-            
-            new_metrics = {}
-            snn_results_str = re.search(r"SNN\s+([\d\.]+)\s+([\d\.]+)\s+([\d\.,NA/]+)", output, re.IGNORECASE)
-            if snn_results_str:
-                new_metrics["accuracy"] = float(snn_results_str.group(1))
-                new_metrics["avg_spikes_per_sample"] = float(snn_results_str.group(3).replace(',', ''))
+            new_metrics = self._parse_benchmark_results(output)
             
             if not new_metrics:
                 print("  - ⚠️ ベンチマーク結果の解析に失敗しました。")
@@ -179,15 +180,18 @@ class SelfEvolvingAgent(AutonomousAgent):
             
             self.memory.add_entry("PERFORMANCE_VERIFICATION_ENDED", {"new_metrics": new_metrics, "improved": improved})
             return improved
+        except subprocess.CalledProcessError as e:
+            print(f"  - ❌ ベンチマーク実行中にエラー: {e}\n{e.stderr}")
+            self.memory.add_entry("PERFORMANCE_VERIFICATION_FAILED", {"reason": str(e.stderr)})
+            return False
         except Exception as e:
-            print(f"  - ❌ ベンチマーク実行中にエラー: {e}")
+            print(f"  - ❌ 不明なエラーが発生しました: {e}")
             self.memory.add_entry("PERFORMANCE_VERIFICATION_FAILED", {"reason": str(e)})
             return False
 
-
     def run_evolution_cycle(self, task_description: str, initial_metrics: Dict[str, Any]):
         """
-        単一の自己進化サイクル（内省→提案→適用→検証→ロールバック）を実行する。
+        単一の自己進化サイクル（内省→提案→適用→検証→結論）を実行する。
         """
         print("\n" + "="*20 + "🧬 自己進化サイクル開始 🧬" + "="*20)
         
@@ -216,8 +220,8 @@ class SelfEvolvingAgent(AutonomousAgent):
         # 5. 結論と後処理
         if performance_improved:
             print("【結論】✅ 性能が向上しました。変更を維持します。")
-            # バックアップファイルを削除
-            backup_path = proposal["file_path"] + ".bak"
+            # 成功したのでバックアップファイルを削除
+            backup_path = os.path.join(self.project_root, proposal["file_path"] + ".bak")
             if os.path.exists(backup_path):
                 os.remove(backup_path)
         else:
