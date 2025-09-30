@@ -16,8 +16,17 @@ from transformers import PreTrainedTokenizerBase
 # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 def _calculate_sparsity_loss(model: nn.Module) -> torch.Tensor:
     """モデルの重みのL1ノルムを計算し、スパース性を促進する。"""
-    l1_norm = sum(p.abs().sum() for p in model.parameters() if p.requires_grad)
+    params = [p for p in model.parameters() if p.requires_grad]
+    if not params:
+        return torch.tensor(0.0) # パラメータがない場合は0を返す
+
+    device = params[0].device
+    l1_norm = sum(
+        (p.abs().sum() for p in params),
+        start=torch.tensor(0.0, device=device)
+    )
     return l1_norm
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 class CombinedLoss(nn.Module):
     """クロスエントロピー損失、スパイク発火率、スパース性の正則化を組み合わせた損失関数。"""
@@ -85,4 +94,3 @@ class DistillationLoss(nn.Module):
             'distill_loss': distill_loss, 'spike_reg_loss': spike_reg_loss,
             'sparsity_loss': sparsity_loss
         }
-# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
