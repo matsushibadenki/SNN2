@@ -11,6 +11,7 @@
 # - スケジューラの依存関係問題を解決するため、メソッドから独立した関数ファクトリにリファクタリング。
 # - Trainerの定義にuse_ampとlog_dirを追加。
 
+import torch
 from dependency_injector import containers, providers
 from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, LRScheduler
@@ -23,6 +24,14 @@ from snn_research.training.losses import CombinedLoss, DistillationLoss
 from snn_research.training.trainers import BreakthroughTrainer, DistillationTrainer
 from .services.chat_service import ChatService
 from .adapters.snn_langchain_adapter import SNNLangChainAdapter
+
+def get_auto_device() -> str:
+    """実行環境に最適なデバイスを自動的に選択する。"""
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 def _calculate_t_max(epochs: int, warmup_epochs: int) -> int:
     """学習率スケジューラのT_maxを計算する"""
@@ -131,11 +140,17 @@ class AppContainer(containers.DeclarativeContainer):
     """GradioアプリやAPIなど、アプリケーション層の依存関係を管理するコンテナ。"""
     config = providers.Configuration()
 
+    # --- デバイス選択ロジック ---
+    device = providers.Factory(
+        lambda cfg_device: get_auto_device() if cfg_device == "auto" else cfg_device,
+        cfg_device=config.inference.device
+    )
+
     # --- 推論エンジン ---
     snn_inference_engine = providers.Singleton(
         SNNInferenceEngine,
         model_path=config.model.path,
-        device=config.inference.device,
+        device=device, # 自動選択されたデバイスを注入
     )
     
     # --- サービス ---
