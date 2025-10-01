@@ -142,3 +142,46 @@ class SelfSupervisedLoss(nn.Module):
             'spike_reg_loss': spike_reg_loss, 'sparsity_loss': sparsity_loss,
             'mem_reg_loss': mem_reg_loss, 'spike_rate': spike_rate
         }
+
+
+class PhysicsInformedLoss(nn.Module):
+    """
+    物理法則（膜電位の滑らかさ）を制約として組み込んだ損失関数。
+    """
+    def __init__(self, ce_weight: float, spike_reg_weight: float, mem_smoothness_weight: float, tokenizer: PreTrainedTokenizerBase, target_spike_rate: float = 0.02):
+        super().__init__()
+        pad_id = tokenizer.pad_token_id
+        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
+        self.weights = {
+            'ce': ce_weight,
+            'spike_reg': spike_reg_weight,
+            'mem_smoothness': mem_smoothness_weight,
+        }
+        self.target_spike_rate = target_spike_rate
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem_sequence: torch.Tensor, model: nn.Module) -> dict:
+        # クロスエントロピー損失
+        ce_loss = self.ce_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
+        
+        # スパイク正則化
+        spike_rate = spikes.mean()
+        spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
+        
+        # 物理損失: 膜電位の急激な変化にペナルティ（時間的滑らかさ）
+        if mem_sequence.numel() > 1:
+            # 差分の2乗平均を計算
+            mem_diff = torch.diff(mem_sequence)
+            mem_smoothness_loss = torch.mean(mem_diff**2)
+        else:
+            mem_smoothness_loss = torch.tensor(0.0, device=logits.device)
+
+        total_loss = (self.weights['ce'] * ce_loss +
+                      self.weights['spike_reg'] * spike_reg_loss +
+                      self.weights['mem_smoothness'] * mem_smoothness_loss)
+        
+        return {
+            'total': total_loss, 'ce_loss': ce_loss,
+            'spike_reg_loss': spike_reg_loss,
+            'mem_smoothness_loss': mem_smoothness_loss,
+            'spike_rate': spike_rate
+        }
