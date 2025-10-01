@@ -20,98 +20,106 @@
 本システムの認知アーキテクチャは、複数の専門コンポーネントが階層的に連携することで実現されています。
 
 ```mermaid
-graph TD  
-    subgraph "Phase 6: 自律的存在 (Digital Life Form)"  
-        direction LR  
-        LifeForm\["run\_life\_form.py\<br/\>(DigitalLifeForm)"\]  
-        Motivation\["snn\_research/cognitive\_architecture\<br/\>(IntrinsicMotivationSystem)"\]  
-        Decision{"探求 or 自己改善?"}  
-          
-        LifeForm \--\> Motivation  
-        Motivation \--\> Decision  
-          
-        subgraph "探求 (Curiosity-Driven Exploration)"  
-            direction TB  
-            Emergence\["snn\_research/cognitive\_architecture\<br/\>(EmergentSystem)\<br/\>複数専門家の対立から課題発見"\]  
-            Planner\["run\_planner.py\<br/\>(HierarchicalPlanner)"\]  
-            Decision \-- "探求 (退屈)" \--\> Emergence  
-            Emergence \--\> Planner  
-        end  
-          
-        subgraph "自己改善 (Self-Improvement)"  
-            direction TB  
-            Evolution\["run\_evolution.py\<br/\>(SelfEvolvingAgent)\<br/\>自己コードを分析・修正"\]  
-            Benchmark\["scripts/run\_benchmark.py"\]  
-            Decision \-- "改善 (現状満足)" \--\> Evolution  
-            Evolution \--\> Benchmark  
-        end  
+%% README.md 内の Mermaid 図（GitHub 用に構文修正）
+graph TD
+  %% Phase 6: 自律的存在 (Digital Life Form)
+  subgraph Phase6 ["Phase 6: 自律的存在 (Digital Life Form)"]
+    direction LR
+    LifeForm[/"run_life_form.py<br/>(DigitalLifeForm)"/]
+    Motivation[/"snn_research/cognitive_architecture<br/>(IntrinsicMotivationSystem)"/]
+    Decision{探求 or 自己改善?}
+
+    LifeForm --> Motivation
+    Motivation --> Decision
+
+    subgraph Curiosity ["探求 (Curiosity-Driven Exploration)"]
+      direction TB
+      Emergence[/"snn_research/cognitive_architecture<br/>(EmergentSystem)<br/>複数専門家の対立から課題発見"/]
+      Planner[/"run_planner.py<br/>(HierarchicalPlanner)"/]
+
+      Decision -- "探求 (退屈)" --> Emergence
+      Emergence --> Planner
     end
 
-    subgraph "Phase 3-5: 高次認知実行コア (Cognitive Execution Core)"  
-        direction TB  
-        subgraph "計画立案 (Planning)"  
-            PlannerSNN\["snn\_research/cognitive\_architecture\<br/\>(PlannerSNN)\<br/\>計画を推論"\]  
-            Planner \--\> PlannerSNN  
-        end
+    subgraph SelfImprove ["自己改善 (Self-Improvement)"]
+      direction TB
+      Evolution[/"run_evolution.py<br/>(SelfEvolvingAgent)<br/>自己コードを分析・修正"/]
+      Benchmark[/"scripts/run_benchmark.py"/]
 
-        subgraph "タスク実行 (Task Execution)"  
-            Workspace\["snn\_research/cognitive\_architecture\<br/\>(GlobalWorkspace)"\]  
-            Specialist\["専門家SNN\<br/\>(Specialist SNN)"\]  
-            RAG\["snn\_research/cognitive\_architecture\<br/\>(RAGSystem)\<br/\>ベクトルストア検索"\]  
-            PlannerSNN \--\> Workspace  
-            Workspace \-- "サブタスク実行" \--\> Specialist  
-            Workspace \-- "知識が必要" \--\> RAG  
-            RAG \--\> Workspace  
-            Specialist \--\> Workspace  
-        end  
+      Decision -- "改善 (現状満足)" --> Evolution
+      Evolution --> Benchmark
+    end
+  end
+
+  %% Phase 3-5: 高次認知実行コア
+  subgraph ExecCore ["Phase 3-5: 高次認知実行コア (Cognitive Execution Core)"]
+    direction TB
+
+    subgraph Planning ["計画立案 (Planning)"]
+      PlannerSNN[/"snn_research/cognitive_architecture<br/>(PlannerSNN)<br/>計画を推論"/]
+      Planner --> PlannerSNN
     end
 
-    subgraph "Phase 0-2: 学習・推論エンジン (Learning & Inference Engine)"  
-        direction TB  
-        subgraph "学習 (Training)"  
-            TrainPy\["train.py"\]  
-            DI\["app/containers.py\<br/\>(DI Container)"\]  
-            Trainer\["snn\_research/training\<br/\>(Trainer)"\]  
-            BreakthroughSNN\["snn\_research/core\<br/\>(BreakthroughSNN)"\]  
-            Loss\["snn\_research/training\<br/\>(Loss Function)"\]  
-            MetaSNN\["snn\_research/cognitive\_architecture\<br/\>(MetaCognitiveSNN \- SNAKE)"\]  
-              
-            TrainPy \-- "起動" \--\> DI  
-            DI \-- "提供" \--\> Trainer  
-            Trainer \-- "学習ループ" \--\> BreakthroughSNN  
-            BreakthroughSNN \-- "出力" \--\> Loss  
-            Loss \-- "誤差" \--\> MetaSNN  
-            Loss \-- "勾配" \--\> Trainer  
-            MetaSNN \-- "注意変調" \--\> BreakthroughSNN  
-        end  
-          
-        subgraph "推論 (Inference)"  
-             Deployment\["snn\_research/deployment.py\<br/\>(SNNInferenceEngine)"\]  
-             Specialist \-- "推論エンジン" \--\> Deployment  
-        end  
+    subgraph TaskExec ["タスク実行 (Task Execution)"]
+      Workspace[/"snn_research/cognitive_architecture<br/>(GlobalWorkspace)"/]
+      Specialist[/"専門家SNN<br/>(Specialist SNN)"/]
+      RAG[/"snn_research/cognitive_architecture<br/>(RAGSystem)<br/>ベクトルストア検索"/]
+
+      PlannerSNN --> Workspace
+      Workspace -->|サブタスク実行| Specialist
+      Workspace -->|知識が必要| RAG
+      RAG --> Workspace
+      Specialist --> Workspace
+    end
+  end
+
+  %% Phase 0-2: 学習・推論エンジン
+  subgraph LearnInfer ["Phase 0-2: 学習・推論エンジン (Learning & Inference Engine)"]
+    direction TB
+
+    subgraph Training ["学習 (Training)"]
+      TrainPy[/"train.py"/]
+      DI[/"app/containers.py<br/>(DI Container)"/]
+      Trainer[/"snn_research/training<br/>(Trainer)"/]
+      BreakthroughSNN[/"snn_research/core<br/>(BreakthroughSNN)"/]
+      Loss[/"snn_research/training<br/>(Loss Function)"/]
+      MetaSNN[/"snn_research/cognitive_architecture<br/>(MetaCognitiveSNN - SNAKE)"/]
+
+      TrainPy -->|起動| DI
+      DI -->|提供| Trainer
+      Trainer -->|学習ループ| BreakthroughSNN
+      BreakthroughSNN -->|出力| Loss
+      Loss -->|誤差| MetaSNN
+      Loss -->|勾配| Trainer
+      MetaSNN -->|注意変調| BreakthroughSNN
     end
 
-    subgraph "オンデマンド学習 (On-Demand Learning)"  
-         direction TB  
-         Agent\["run\_agent.py\<br/\>(AutonomousAgent)"\]  
-         DistillManager\["snn\_research/distillation\<br/\>(KnowledgeDistillationManager)"\]  
-         Registry\["snn\_research/distillation\<br/\>(ModelRegistry)"\]  
-           
-         Agent \-- "未知のタスク" \--\> DistillManager  
-         DistillManager \-- "学習実行" \--\> TrainPy  
-         DistillManager \-- "性能評価" \--\> Benchmark  
-         DistillManager \-- "モデル登録" \--\> Registry  
-         Agent \-- "モデル検索" \--\> Registry  
+    subgraph Inference ["推論 (Inference)"]
+      Deployment[/"snn_research/deployment.py<br/>(SNNInferenceEngine)"/]
+      Specialist -->|推論エンジン| Deployment
     end
+  end
 
-    linkStyle 0,1,2,3 stroke-width:2px,fill:none,stroke:orange  
-      
-    style LifeForm fill:\#cde4ff,stroke:\#333,stroke-width:2px  
-    style Planner fill:\#ffe4c4,stroke:\#333,stroke-width:2px  
-    style Agent fill:\#d4edda,stroke:\#333,stroke-width:2px  
-    style TrainPy fill:\#f8d7da,stroke:\#333,stroke-width:2px
+  %% On-Demand Learning
+  subgraph OnDemand ["オンデマンド学習 (On-Demand Learning)"]
+    direction TB
+    Agent[/"run_agent.py<br/>(AutonomousAgent)"/]
+    DistillManager[/"snn_research/distillation<br/>(KnowledgeDistillationManager)"/]
+    Registry[/"snn_research/distillation<br/>(ModelRegistry)"/]
+
+    Agent -->|未知のタスク| DistillManager
+    DistillManager -->|学習実行| TrainPy
+    DistillManager -->|性能評価| Benchmark
+    DistillManager -->|モデル登録| Registry
+    Agent -->|モデル検索| Registry
+  end
+
+  %% Node styles
+  style LifeForm fill:#cde4ff,stroke:#333,stroke-width:2px
+  style Planner fill:#ffe4c4,stroke:#333,stroke-width:2px
+  style Agent fill:#d4edda,stroke:#333,stroke-width:2px
+  style TrainPy fill:#f8d7da,stroke:#333,stroke-width:2px
 ```
-
 
 ## **3\. 主要な実行スクリプト**
 
