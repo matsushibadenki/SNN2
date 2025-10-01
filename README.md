@@ -1,4 +1,4 @@
-# **Project SNN: A Predictive Digital Life Form (v3.0)**
+# **Project SNN: A Predictive Digital Life Form (v2.0)**
 
 ## **1\. 概要**
 
