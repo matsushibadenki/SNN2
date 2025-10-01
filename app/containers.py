@@ -15,8 +15,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 # --- プロジェクト内モジュールのインポート (既存) ---
 from snn_research.core.snn_core import BreakthroughSNN
 from snn_research.deployment import SNNInferenceEngine
-from snn_research.training.losses import CombinedLoss, DistillationLoss
-from snn_research.training.trainers import BreakthroughTrainer, DistillationTrainer
+from snn_research.training.losses import CombinedLoss, DistillationLoss, SelfSupervisedLoss
+from snn_research.training.trainers import BreakthroughTrainer, DistillationTrainer, SelfSupervisedTrainer
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from .services.chat_service import ChatService
 from .adapters.snn_langchain_adapter import SNNLangChainAdapter
@@ -26,6 +26,8 @@ from snn_research.learning_rules import get_bio_learning_rule
 from snn_research.bio_models.simple_network import BioSNN
 from snn_research.training.bio_trainer import BioTrainer
 # ---
+
+
 
 def get_auto_device() -> str:
     """実行環境に最適なデバイスを自動的に選択する。"""
@@ -165,6 +167,41 @@ class TrainingContainer(containers.DeclarativeContainer):
         BioTrainer,
         model=bio_snn_model,
         device=providers.Factory(get_auto_device),
+    )
+
+    # === ✨自己教師あり学習 (self_supervised) のためのプロバイダ (新規追加) ===
+    ssl_optimizer = providers.Factory(
+        AdamW,
+        lr=config.training.self_supervised.learning_rate,
+    )
+
+    ssl_scheduler = providers.Factory(
+        _create_scheduler,
+        epochs=config.training.epochs,
+        warmup_epochs=config.training.self_supervised.warmup_epochs,
+    )
+    
+    self_supervised_loss = providers.Factory(
+        SelfSupervisedLoss,
+        prediction_weight=config.training.self_supervised.loss.prediction_weight,
+        spike_reg_weight=config.training.self_supervised.loss.spike_reg_weight,
+        sparsity_reg_weight=config.training.self_supervised.loss.sparsity_reg_weight,
+        mem_reg_weight=config.training.self_supervised.loss.mem_reg_weight,
+        tokenizer=tokenizer,
+    )
+
+    self_supervised_trainer = providers.Factory(
+        SelfSupervisedTrainer,
+        model=snn_model,
+        optimizer=ssl_optimizer, # SSL専用オプティマイザ
+        criterion=self_supervised_loss, # SSL専用損失関数
+        scheduler=ssl_scheduler, # SSL専用スケジューラ
+        device=providers.Factory(get_auto_device),
+        grad_clip_norm=config.training.self_supervised.grad_clip_norm,
+        rank=-1,
+        use_amp=config.training.self_supervised.use_amp,
+        log_dir=config.training.log_dir,
+        astrocyte_network=astrocyte_network, # アストロサイトは共用可能
     )
 
 
