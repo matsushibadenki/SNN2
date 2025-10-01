@@ -101,3 +101,44 @@ class DistillationLoss(nn.Module):
             'distill_loss': distill_loss, 'spike_reg_loss': spike_reg_loss,
             'sparsity_loss': sparsity_loss, 'mem_reg_loss': mem_reg_loss
         }
+        
+class SelfSupervisedLoss(nn.Module):
+    """
+    時間的自己教師あり学習のための損失関数。
+    次のトークンを予測するタスクと、各種正則化を組み合わせる。
+    """
+    def __init__(self, prediction_weight: float, spike_reg_weight: float, sparsity_reg_weight: float, mem_reg_weight: float, tokenizer: PreTrainedTokenizerBase, target_spike_rate: float = 0.02):
+        super().__init__()
+        pad_id = tokenizer.pad_token_id
+        # CombinedLossと同様にクロスエントロピーを使用
+        self.prediction_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
+        self.weights = {
+            'prediction': prediction_weight,
+            'spike_reg': spike_reg_weight,
+            'sparsity_reg': sparsity_reg_weight,
+            'mem_reg': mem_reg_weight
+        }
+        self.target_spike_rate = target_spike_rate
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module) -> dict:
+        # 次のトークン予測の損失
+        prediction_loss = self.prediction_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
+        
+        # CombinedLossから正則化項の計算を流用
+        spike_rate = spikes.mean()
+        spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
+        
+        sparsity_loss = _calculate_sparsity_loss(model)
+
+        mem_reg_loss = torch.mean(mem**2)
+        
+        total_loss = (self.weights['prediction'] * prediction_loss + 
+                      self.weights['spike_reg'] * spike_reg_loss +
+                      self.weights['sparsity_reg'] * sparsity_loss +
+                      self.weights['mem_reg'] * mem_reg_loss)
+        
+        return {
+            'total': total_loss, 'prediction_loss': prediction_loss,
+            'spike_reg_loss': spike_reg_loss, 'sparsity_loss': sparsity_loss,
+            'mem_reg_loss': mem_reg_loss, 'spike_rate': spike_rate
+        }
