@@ -7,7 +7,7 @@ device: "auto"
 
 # データ設定
 data:
-  path: "data/sample_data.jsonl" # シンプルなタスクのためサンプルデータに変更
+  path: "data/sample_data.jsonl"
   format: "simple_text"
   split_ratio: 0.1
   max_vocab_size: 50000
@@ -15,8 +15,8 @@ data:
 
 # 学習パラメータ設定
 training:
-  # paradigm: "gradient_based" または "biologically_plausible" を選択
-  paradigm: "biologically_plausible"
+  # paradigm: "gradient_based", "biologically_plausible", "self_supervised" を選択
+  paradigm: "self_supervised"
   epochs: 10
   batch_size: 8
   
@@ -38,31 +38,37 @@ training:
       loss:
         ce_weight: 0.3
         distill_weight: 0.7
-        spike_reg_weight: 0.01
-        sparsity_reg_weight: 0.00001
-        mem_reg_weight: 0.00001
-        temperature: 2.0
+        # ... (以下省略)
 
   # --- 生物学的学習 (biologically_plausible) の設定 ---
   biologically_plausible:
-    # learning_rule: "STDP" または "REWARD_MODULATED_STDP" を選択
     learning_rule: "REWARD_MODULATED_STDP"
-    # ニューロンモデル (LIF)
     neuron:
       tau_mem: 10.0
       v_threshold: 1.0
       v_reset: 0.0
       v_rest: 0.0
-    # STDP
     stdp:
       tau_trace: 20.0
       learning_rate: 0.005
       a_plus: 1.0
       a_minus: 1.0
-    # 報酬変調STDP
     reward_modulated_stdp:
       tau_eligibility: 100.0
       learning_rate: 0.01
+
+  # --- ✨自己教師あり学習 (self_supervised) の設定 (新規追加) ---
+  self_supervised:
+    learning_rate: 0.0008 # SSL用に少し高めの学習率
+    use_scheduler: true
+    grad_clip_norm: 1.0
+    warmup_epochs: 1
+    use_amp: true
+    loss:
+      prediction_weight: 1.0 # 予測損失の重み
+      spike_reg_weight: 0.01
+      sparsity_reg_weight: 0.00001
+      mem_reg_weight: 0.00001
 
   # ログと評価の設定
   log_dir: "runs/snn_experiment"
