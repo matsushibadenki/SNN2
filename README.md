@@ -19,7 +19,6 @@
 
 本システムの認知アーキテクチャは、複数の専門コンポーネントが階層的に連携することで実現されています。
 
-```mermaid
 graph TD  
     subgraph "Phase 6: 自律的存在 (Digital Life Form)"  
         direction LR  
@@ -104,16 +103,12 @@ graph TD
          Agent \-- "モデル検索" \--\> Registry  
     end
 
-    linkStyle 0 stroke-width:2px,fill:none,stroke:orange;  
-    linkStyle 1 stroke-width:2px,fill:none,stroke:orange;  
-    linkStyle 2 stroke-width:2px,fill:none,stroke:orange;  
-    linkStyle 3 stroke-width:2px,fill:none,stroke:orange;
-
+    linkStyle 0,1,2,3 stroke-width:2px,fill:none,stroke:orange  
+      
     style LifeForm fill:\#cde4ff,stroke:\#333,stroke-width:2px  
     style Planner fill:\#ffe4c4,stroke:\#333,stroke-width:2px  
     style Agent fill:\#d4edda,stroke:\#333,stroke-width:2px  
     style TrainPy fill:\#f8d7da,stroke:\#333,stroke-width:2px
-```
 
 ## **3\. 主要な実行スクリプト**
 
