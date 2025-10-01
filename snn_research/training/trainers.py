@@ -73,7 +73,9 @@ class BreakthroughTrainer:
             if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
                 ignore_idx = self.criterion.ce_loss_fn.ignore_index
                 mask = target_ids != ignore_idx
-                accuracy = (preds[mask] == target_ids[mask]).float().sum() / mask.sum() if mask.sum() > 0 else torch.tensor(0.0)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+                accuracy = (preds[mask] == target_ids[mask]).float().sum() / mask.long().sum() if mask.long().sum() > 0 else torch.tensor(0.0)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 loss_dict['accuracy'] = accuracy
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
@@ -237,7 +239,9 @@ class PhysicsInformedTrainer(BreakthroughTrainer):
             if hasattr(self.criterion, "ce_loss_fn") and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
                 ignore_idx = self.criterion.ce_loss_fn.ignore_index
                 mask = target_ids != ignore_idx
-                accuracy = (preds[mask] == target_ids[mask]).float().sum() / mask.sum() if mask.sum() > 0 else torch.tensor(0.0)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+                accuracy = (preds[mask] == target_ids[mask]).float().sum() / mask.long().sum() if mask.long().sum() > 0 else torch.tensor(0.0)
+                # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
                 loss_dict['accuracy'] = accuracy
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
