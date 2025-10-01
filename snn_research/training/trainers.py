@@ -1,15 +1,5 @@
 # matsushibadenki/snn/snn_research/training/trainers.py
 # SNNモデルの学習と評価ループを管理するTrainerクラス (モニタリング・評価機能完備)
-# 
-# 機能:
-# - Metal (mps) デバイスに対応。
-# - TensorBoardと連携し、学習・検証のメトリクスをリアルタイムで可視化。
-# - 検証データセットでモデル性能を評価する `evaluate` メソッドを実装。
-# - 検証結果に基づき、最も性能の良いモデルを `best_model.pth` として保存する機能を追加。
-# - チェックポイントの保存・読み込みロジックを修正し、バッファを除外して再開時のサイズミスマッチエラーを解消。
-# - 損失関数にモデル全体を渡し、スパース性などのハードウェアを意識した正則化を可能に。
-# - [改善] BreakthroughSNNのアーキテクチャ変更に対応し、シーケンス全体の損失を計算するように_run_stepを修正。
-# - [追加] AstrocyteNetworkと連携し、学習中のグローバル活動を監視・調整する機能を追加。
 
 import torch
 import torch.nn as nn
@@ -38,7 +28,7 @@ class BreakthroughTrainer:
         self.grad_clip_norm = grad_clip_norm
         self.rank = rank
         self.use_amp = use_amp and self.device != 'mps'
-        self.astrocyte_network = astrocyte_network # アストロサイトを追加
+        self.astrocyte_network = astrocyte_network
         
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         self.best_metric = float('inf')
@@ -75,16 +65,15 @@ class BreakthroughTrainer:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
                 self.optimizer.step()
             
-            # アストロサイトにステップを通知
             if self.astrocyte_network:
                 self.astrocyte_network.step()
 
         with torch.no_grad():
             preds = torch.argmax(logits, dim=-1)
-            if isinstance(self.criterion, CombinedLoss):
+            if hasattr(self.criterion, 'ce_loss_fn') and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
                 ignore_idx = self.criterion.ce_loss_fn.ignore_index
                 mask = target_ids != ignore_idx
-                accuracy = (preds[mask] == target_ids[mask]).sum().float() / mask.sum() if mask.sum() > 0 else torch.tensor(0.0)
+                accuracy = (preds[mask] == target_ids[mask]).float().sum() / mask.long().sum() if mask.long().sum() > 0 else torch.tensor(0.0)
                 loss_dict['accuracy'] = accuracy
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
@@ -100,7 +89,6 @@ class BreakthroughTrainer:
             for key, value in metrics.items(): total_metrics[key] += value
             progress_bar.set_postfix({k: v / (progress_bar.n + 1) for k, v in total_metrics.items()})
 
-
         if self.scheduler: self.scheduler.step()
         
         avg_metrics = {key: value / num_batches for key, value in total_metrics.items()}
@@ -113,7 +101,6 @@ class BreakthroughTrainer:
         return avg_metrics
 
     def evaluate(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
-        """検証データセットでモデルを評価する。"""
         total_metrics: Dict[str, float] = collections.defaultdict(float)
         num_batches = len(dataloader)
         progress_bar = tqdm(dataloader, desc=f"Evaluating Epoch {epoch}", disable=(self.rank not in [-1, 0]))
@@ -136,8 +123,6 @@ class BreakthroughTrainer:
     def save_checkpoint(self, path: str, epoch: int, metric_value: float, **kwargs: Any):
         if self.rank in [-1, 0]:
             model_to_save = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-            
-            # 状態を持たないニューロンのバッファ（memなど）は保存しない
             buffer_names = {name for name, _ in model_to_save.named_buffers() if 'mem' not in name}
             model_state = {k: v for k, v in model_to_save.state_dict().items() if k not in buffer_names}
 
@@ -146,24 +131,18 @@ class BreakthroughTrainer:
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'best_metric': self.best_metric
             }
-            if self.use_amp:
-                state['scaler_state_dict'] = self.scaler.state_dict()
-            if self.scheduler: 
-                state['scheduler_state_dict'] = self.scheduler.state_dict()
+            if self.use_amp: state['scaler_state_dict'] = self.scaler.state_dict()
+            if self.scheduler: state['scheduler_state_dict'] = self.scheduler.state_dict()
             state.update(kwargs)
             
             os.makedirs(os.path.dirname(path), exist_ok=True)
             torch.save(state, path)
             print(f"✅ チェックポイントを '{path}' に保存しました (Epoch: {epoch})。")
             
-            is_best = metric_value < self.best_metric
-            if is_best:
+            if metric_value < self.best_metric:
                 self.best_metric = metric_value
                 best_path = os.path.join(os.path.dirname(path), 'best_model.pth')
-                
-                # ベストモデルには、推論に必要な情報のみを保存
-                temp_state_for_best = {'model_state_dict': model_state}
-                temp_state_for_best.update(kwargs)
+                temp_state_for_best = {'model_state_dict': model_state, **kwargs}
                 torch.save(temp_state_for_best, best_path)
                 print(f"🏆 新しいベストモデルを '{best_path}' に保存しました (Metric: {metric_value:.4f})。")
 
@@ -172,31 +151,22 @@ class BreakthroughTrainer:
             print(f"⚠️ チェックポイントファイルが見つかりません: {path}。最初から学習を開始します。")
             return 0
             
-        map_location = self.device
-        checkpoint = torch.load(path, map_location=map_location)
-        
+        checkpoint = torch.load(path, map_location=self.device)
         model_to_load = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
-        
-        # strict=Falseで、バッファなどの不一致を許容
         model_to_load.load_state_dict(checkpoint['model_state_dict'], strict=False)
         
-        if 'optimizer_state_dict' in checkpoint:
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        
-        if self.scheduler and 'scheduler_state_dict' in checkpoint:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        
-        if self.use_amp and 'scaler_state_dict' in checkpoint:
-            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        if 'optimizer_state_dict' in checkpoint: self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if self.scheduler and 'scheduler_state_dict' in checkpoint: self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        if self.use_amp and 'scaler_state_dict' in checkpoint: self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
 
         self.best_metric = checkpoint.get('best_metric', float('inf'))
-        start_epoch = checkpoint.get('epoch', 0)
+        start_epoch = checkpoint.get('epoch', 0) + 1
         print(f"✅ チェックポイント '{path}' を正常にロードしました。Epoch {start_epoch} から学習を再開します。")
         return start_epoch
 
 
 class DistillationTrainer(BreakthroughTrainer):
-    """知識蒸留に特化したトレーナー（予測符号化モデル対応）。"""
+    """知識蒸留に特化したトレーナー。"""
     def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
         if is_train: self.model.train()
         else: self.model.eval()
@@ -209,12 +179,8 @@ class DistillationTrainer(BreakthroughTrainer):
                 
                 assert isinstance(self.criterion, DistillationLoss)
                 loss_dict = self.criterion(
-                    student_logits=student_logits,
-                    teacher_logits=teacher_logits,
-                    targets=student_target,
-                    spikes=spikes,
-                    mem=mem,
-                    model=self.model
+                    student_logits=student_logits, teacher_logits=teacher_logits, targets=student_target,
+                    spikes=spikes, mem=mem, model=self.model
                 )
         
         if is_train:
@@ -225,22 +191,13 @@ class DistillationTrainer(BreakthroughTrainer):
             self.scaler.step(self.optimizer)
             self.scaler.update()
             
-            # アストロサイトにステップを通知
-            if self.astrocyte_network:
-                self.astrocyte_network.step()
+            if self.astrocyte_network: self.astrocyte_network.step()
         
         return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
-        
-        
+
 class SelfSupervisedTrainer(BreakthroughTrainer):
     """自己教師あり学習に特化したトレーナー。"""
-    # BreakthroughTrainerのロジックをそのまま継承する。
-    # DIコンテナによって、criterionにSelfSupervisedLossが注入されることで、
-    # 振る舞いが変わる。
-    # 将来的にSSL特有のロジック（例: データ拡張）が必要になった場合に、
-    # このクラスのメソッドをオーバーライドする。
     pass
-    
 
 class PhysicsInformedTrainer(BreakthroughTrainer):
     """物理情報SNNのためのトレーナー。"""
@@ -254,10 +211,7 @@ class PhysicsInformedTrainer(BreakthroughTrainer):
         
         with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
             with torch.set_grad_enabled(is_train):
-                # モデル呼び出し時に return_full_mems=True を指定
                 logits, spikes, mem_sequence = self.model(input_ids, return_spikes=True, return_full_mems=True)
-                
-                # 完全な膜電位シーケンスを損失関数に渡す
                 loss_dict = self.criterion(logits, target_ids, spikes, mem_sequence, self.model)
         
         if is_train:
@@ -280,10 +234,10 @@ class PhysicsInformedTrainer(BreakthroughTrainer):
 
         with torch.no_grad():
             preds = torch.argmax(logits, dim=-1)
-            if hasattr(self.criterion, "ce_loss_fn"):
+            if hasattr(self.criterion, "ce_loss_fn") and hasattr(self.criterion.ce_loss_fn, 'ignore_index'):
                 ignore_idx = self.criterion.ce_loss_fn.ignore_index
                 mask = target_ids != ignore_idx
-                accuracy = (preds[mask] == target_ids[mask]).sum().float() / mask.sum() if mask.sum() > 0 else torch.tensor(0.0)
+                accuracy = (preds[mask] == target_ids[mask]).float().sum() / mask.long().sum() if mask.long().sum() > 0 else torch.tensor(0.0)
                 loss_dict['accuracy'] = accuracy
 
         return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
