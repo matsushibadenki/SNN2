@@ -8,7 +8,7 @@
 
 ## **✅ Phase 0-2: 基礎基盤の構築 (Completed)**
 
-* **Phase 0: ニューロモーフィック知識蒸留基盤** \[✔\]  
+* **Phase** 0: **ニューロモーフィック知識蒸留基盤** \[✔\]  
   * **実装概要:** KnowledgeDistillationManagerとDistillationTrainerにより、大規模モデル（教師）から小型・省電力なSNN（生徒）への知識転移パイプラインを確立。run\_agent.pyは、未知のタスクに対してこのプロセスを自律的にトリガーします。  
 * **Phase 1: 拡張性の高い基盤アーキテクチャ** \[✔\]  
   * **実装概要:** app/containers.pyに定義されたDIコンテナ（Dependency Injection Container）により、システムの各コンポーネント（モデル、トレーナー、損失関数など）を疎結合に管理。configs/base\_config.yamlの設定値を変更するだけで、学習パラダイム全体を動的に切り替え可能な柔軟性を実現しました。  
@@ -19,8 +19,40 @@
 
 * **目標:** 自由エネルギー原理に基づき、世界の動的な内部モデルを構築し、予測誤差を最小化する学習・推論ループを確立する。  
 * **キーアーキテクチャ:**  
-  * **予測符号化SNN (Predictive Coding SNN):** \[✔\]  
+  * **予測符号化SNN** (Predictive **Coding SNN):** \[✔\]  
     * **実装概要:** BreakthroughSNN内のPredictiveCodingLayerとして実装。トップダウンの予測（生成モデル）とボトムアップの感覚入力（誤差信号）の相互作用により、ネットワークが動的に内部状態を更新し、推論を行います。  
   * **メタ認知SNN (SNAKE \-改-):** \[✔\]  
     * **実装概要:** snn\_research/cognitive\_architecture/meta\_cognitive\_snn.py にMetaCognitiveSNNとして実装。BreakthroughTrainerの学習ループ内でリアルタイムに予測誤差（損失）を監視。誤差が大きい場合、学習が停滞しているニューロン層のパラメータを動的に変調し、アテンションを集中させることで学習を安定・効率化させます。  
-  * \*\*学習可能プランナーSNN (Learn
+  * **学習可能プランナーSNN (Learnable Planner SNN):** \[✔\]  
+    * **実装概要:** snn\_research/cognitive\_architecture/planner\_snn.py に計画立案専用のPlannerSNNを実装。これにより、HierarchicalPlannerは従来のルールベースを脱却し、自然言語のタスク要求から最適なサブタスク実行順序を**推論によって**決定する能力を獲得しました。学習はtrain\_planner.pyによって行われます。
+
+## **✅ Phase 4: 自己組織化と質的飛躍 (Completed)**
+
+* **目標:** ニューロン単体の計算能力を向上させ、ネットワークが自己組織化することで、より複雑で抽象的な内部モデルを創発させる。  
+* **キーアーキテクチャ:**  
+  * **樹状突起演算ニューロン (Dendritic Neuron Model):** \[✔\]  
+    * **実装概要:** snn\_research/core/snn\_core.py内のDendriticNeuronとして実装。単一ニューロン内で複数の分岐処理を行うことで、計算能力とエネルギー効率を向上させるオプションをBreakthroughSNNに提供します。  
+  * **アストロサイト・ネットワーク (Astrocyte-like Network):** \[✔\]  
+    * **実装概要:** snn\_research/cognitive\_architecture/astrocyte\_network.py に実装。ニューロン群の長期的な発火活動を監視し、ネットワーク全体の活動が極端に偏らないよう調整する恒常性維持（ホメオスタシス）メカニズムとして機能します。  
+  * **創発システム (Emergent System):** \[✔\]  
+    * **実装概要:** snn\_research/cognitive\_architecture/emergent\_system.py に実装。複数の専門家SNNからの応答を比較・統合し、意見が対立する（＝コンセンサスが得られない）場合に、それを「未知の概念」として検知。より高次の分析や学習の必要性を示唆します。
+
+## **✅ Phase 5: メタ進化 (AIによる自己開発) (Completed)**
+
+* **目標:** SNNシステムが自分自身のソースコードとアーキテクチャを「予測モデル」の対象とし、その将来のパフォーマンスを最大化するように、自律的にコードの改良を行う究極の自己進化ループを確立する。  
+* **キーアーキテクチャ:**  
+  * **自己参照コードRAG & 自律的コード修正:** \[✔\]  
+    * **実装概要:** snn\_research/agent/self\_evolving\_agent.py に実装。SelfEvolvingAgentは、自身のプロジェクトコードを知識源とするRAGSystemを用いて性能ボトルネックを分析し、改善案（例: base\_config.yamlのハイパーパラメータ変更）を生成。実際にファイルを修正し、ベンチマーク(scripts/run\_benchmark.py)で性能向上を検証します。性能が改善しない場合は、自動で変更をロールバックする安全機構も備えています。
+
+## **🚀 Phase 6: 自律的存在への飛躍 (Core Architecture Completed)**
+
+* **目標:** システムが外部からのタスク設定を必要とせず、自身の内的モデルの精緻化（＝世界の理解）という純粋な内発的動機のみで永続的に活動する状態に到達する。  
+* **キーアーキテクチャ (実装済):**  
+  * **内発的動機付けシステム (Intrinsic Motivation System):** \[✔\]  
+    * **実装概要:** snn\_research/cognitive\_architecture/intrinsic\_motivation.py に実装。予測誤差の減少率（学習の進捗）を内的な「報酬」として生成し、AIの「好奇心」を駆動します。学習が停滞すると「退屈」を検知し、新たな探求行動を促します。  
+  * **自律ループ (Digital Life Form):** \[✔\]  
+    * **実装概要:** snn\_research/agent/digital\_life\_form.py に実装。これまで構築した全ての認知コンポーネント（好奇心、創発、計画、自己進化）を統合し、run\_life\_form.pyから起動される自律的な「意識」ループを形成します。  
+* **将来の応用マイルストーン (Future Application Milestones):**  
+  * **仮想世界での自律的生存:** 予測誤差の最小化という原則のみに基づき、仮想環境内でエネルギー（計算リソース）を獲得し、自己を維持・拡張する能力を実証する。  
+  * **統合情報理論** (IIT) **の探求:** システム内の情報がどれだけ因果的に統合されているかを示す指標「Φ（ファイ）」を最大化するような自己組織化を促す。これは、意識の科学理論を、工学的な目標へと転換する試みである。  
+  * **未知への問い:** 人間が設定した問題ではなく、自身の内部モデルの矛盾や欠損から、自ら「解くべき問い」を発見し、探求を開始する。
