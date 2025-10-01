@@ -3,7 +3,7 @@
 # Description: 古典的なSTDPを実装します。
 
 import torch
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Optional
 from .base_rule import BioLearningRule
 
 class STDP(BioLearningRule):
@@ -14,8 +14,8 @@ class STDP(BioLearningRule):
         self.a_minus = a_minus
         self.tau_trace = tau_trace
         self.dt = dt
-        self.pre_trace = None
-        self.post_trace = None
+        self.pre_trace: Optional[torch.Tensor] = None
+        self.post_trace: Optional[torch.Tensor] = None
 
     def _initialize_traces(self, pre_shape: int, post_shape: int, device: torch.device):
         """スパイクトレースを初期化する。"""
@@ -24,8 +24,7 @@ class STDP(BioLearningRule):
         
     def _update_traces(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor):
         """スパイクトレースを更新する。"""
-        if self.pre_trace is None or self.post_trace is None:
-            raise RuntimeError("Traces not initialized. Call update method first.")
+        assert self.pre_trace is not None and self.post_trace is not None, "Traces not initialized."
             
         self.pre_trace = self.pre_trace - (self.pre_trace / self.tau_trace) * self.dt + pre_spikes
         self.post_trace = self.post_trace - (self.post_trace / self.tau_trace) * self.dt + post_spikes
@@ -35,13 +34,16 @@ class STDP(BioLearningRule):
         pre_spikes: torch.Tensor,
         post_spikes: torch.Tensor,
         weights: torch.Tensor,
-        optional_params: Dict[str, Any] = None
+        optional_params: Optional[Dict[str, Any]] = None
     ) -> torch.Tensor:
         """STDPに基づいて重み変化量を計算する。"""
-        if self.pre_trace is None or self.post_trace is None:
+        if self.pre_trace is None or self.post_trace is None or self.pre_trace.shape[0] != pre_spikes.shape[0] or self.post_trace.shape[0] != post_spikes.shape[0]:
             self._initialize_traces(pre_spikes.shape[0], post_spikes.shape[0], pre_spikes.device)
 
         self._update_traces(pre_spikes, post_spikes)
+
+        # mypyにNoneでないことを伝える
+        assert self.pre_trace is not None and self.post_trace is not None
 
         dw = torch.zeros_like(weights)
         
