@@ -1,0 +1,53 @@
+# snn_research/learning_rules/stdp.py
+# Title: STDP (Spike-Timing-Dependent Plasticity) 学習ルール
+# Description: 古典的なSTDPを実装します。
+
+import torch
+from typing import Dict, Any, Tuple
+from .base_rule import BioLearningRule
+
+class STDP(BioLearningRule):
+    """ペアベースのSTDP学習ルールを実装するクラス。"""
+    def __init__(self, learning_rate: float, a_plus: float, a_minus: float, tau_trace: float, dt: float = 1.0):
+        self.learning_rate = learning_rate
+        self.a_plus = a_plus
+        self.a_minus = a_minus
+        self.tau_trace = tau_trace
+        self.dt = dt
+        self.pre_trace = None
+        self.post_trace = None
+
+    def _initialize_traces(self, pre_shape: int, post_shape: int, device: torch.device):
+        """スパイクトレースを初期化する。"""
+        self.pre_trace = torch.zeros(pre_shape, device=device)
+        self.post_trace = torch.zeros(post_shape, device=device)
+        
+    def _update_traces(self, pre_spikes: torch.Tensor, post_spikes: torch.Tensor):
+        """スパイクトレースを更新する。"""
+        if self.pre_trace is None or self.post_trace is None:
+            raise RuntimeError("Traces not initialized. Call update method first.")
+            
+        self.pre_trace = self.pre_trace - (self.pre_trace / self.tau_trace) * self.dt + pre_spikes
+        self.post_trace = self.post_trace - (self.post_trace / self.tau_trace) * self.dt + post_spikes
+
+    def update(
+        self,
+        pre_spikes: torch.Tensor,
+        post_spikes: torch.Tensor,
+        weights: torch.Tensor,
+        optional_params: Dict[str, Any] = None
+    ) -> torch.Tensor:
+        """STDPに基づいて重み変化量を計算する。"""
+        if self.pre_trace is None or self.post_trace is None:
+            self._initialize_traces(pre_spikes.shape[0], post_spikes.shape[0], pre_spikes.device)
+
+        self._update_traces(pre_spikes, post_spikes)
+
+        dw = torch.zeros_like(weights)
+        
+        # LTP (ポスト -> プレ)
+        dw += self.learning_rate * self.a_plus * torch.outer(post_spikes, self.pre_trace)
+        # LTD (プレ -> ポスト)
+        dw -= self.learning_rate * self.a_minus * torch.outer(self.post_trace, pre_spikes).T
+
+        return dw

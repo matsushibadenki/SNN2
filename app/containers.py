@@ -1,16 +1,10 @@
-# matsushibadenki/snn/app/containers.py
-# DIコンテナの定義ファイル
-# 
+# matsushibadenki/snn2/app/containers.py
+# DIコンテナの定義ファイル (完全版)
+#
 # 機能:
-# - プロジェクト全体の依存関係を一元管理する。
-# - 設定ファイルに基づいてオブジェクトを生成・設定する。
-# - 学習用とアプリ用のコンテナを分離し、関心を分離。
-# - 独自Vocabularyを廃止し、Hugging Face Tokenizerに全面的に移行。
-# - トークナイザの読み込み元をdistillation設定から共通設定に変更。
-# - 損失関数にpad_idではなくtokenizerプロバイダを渡すように修正し、依存関係の解決を遅延させる。
-# - スケジューラの依存関係問題を解決するため、メソッドから独立した関数ファクトリにリファクタリング。
-# - Trainerの定義にuse_ampとlog_dirを追加。
-# - [追加] AstrocyteNetworkプロバイダを追加。
+# - 勾配ベース学習と生物学的学習の2つのパラダイムをDIコンテナで管理。
+# - 設定ファイルの `training.paradigm` の値に応じて、適切なコンポーネント群を構築する。
+# - 既存の全機能を維持しつつ、新しい学習方法への拡張性を確保。
 
 import torch
 from dependency_injector import containers, providers
@@ -18,7 +12,7 @@ from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, LRScheduler
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# プロジェクト内モジュールのインポート
+# --- プロジェクト内モジュールのインポート (既存) ---
 from snn_research.core.snn_core import BreakthroughSNN
 from snn_research.deployment import SNNInferenceEngine
 from snn_research.training.losses import CombinedLoss, DistillationLoss
@@ -26,6 +20,12 @@ from snn_research.training.trainers import BreakthroughTrainer, DistillationTrai
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from .services.chat_service import ChatService
 from .adapters.snn_langchain_adapter import SNNLangChainAdapter
+
+# --- ✨新規インポート (生物学的学習則関連) ---
+from snn_research.learning_rules import get_bio_learning_rule
+from snn_research.bio_models.simple_network import BioSNN
+from snn_research.training.bio_trainer import BioTrainer
+# ---
 
 def get_auto_device() -> str:
     """実行環境に最適なデバイスを自動的に選択する。"""
@@ -46,34 +46,22 @@ def _create_scheduler(optimizer: Optimizer, epochs: int, warmup_epochs: int) -> 
         start_factor=1e-3,
         total_iters=warmup_epochs,
     )
-    
-    main_scheduler_t_max = _calculate_t_max(
-        epochs=epochs,
-        warmup_epochs=warmup_epochs,
-    )
+    main_scheduler_t_max = _calculate_t_max(epochs=epochs, warmup_epochs=warmup_epochs)
+    main_scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=main_scheduler_t_max)
+    return SequentialLR(optimizer=optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_epochs])
 
-    main_scheduler = CosineAnnealingLR(
-        optimizer=optimizer,
-        T_max=main_scheduler_t_max,
-    )
-
-    return SequentialLR(
-        optimizer=optimizer,
-        schedulers=[warmup_scheduler, main_scheduler],
-        milestones=[warmup_epochs],
-    )
 
 class TrainingContainer(containers.DeclarativeContainer):
     """学習に関連するオブジェクトの依存関係を管理するコンテナ。"""
     config = providers.Configuration()
 
-    # --- トークナイザ ---
+    # --- 共通コンポーネント ---
     tokenizer = providers.Factory(
         AutoTokenizer.from_pretrained,
         pretrained_model_name_or_path=config.data.tokenizer_name
     )
 
-    # --- モデル関連 ---
+    # === 勾配ベース学習 (gradient_based) のためのプロバイダ ===
     snn_model = providers.Factory(
         BreakthroughSNN,
         vocab_size=tokenizer.provided.vocab_size,
@@ -82,70 +70,101 @@ class TrainingContainer(containers.DeclarativeContainer):
         num_layers=config.model.num_layers,
         time_steps=config.model.time_steps,
         n_head=config.model.n_head,
-        neuron_config=config.model.neuron, # ニューロン設定を渡す
+        neuron_config=config.model.neuron,
     )
     
-    # --- 認知アーキテクチャ ---
     astrocyte_network = providers.Factory(
         AstrocyteNetwork,
         snn_model=snn_model
     )
     
-    # --- 学習コンポーネント ---
     optimizer = providers.Factory(
         AdamW,
-        lr=config.training.learning_rate,
+        lr=config.training.gradient_based.learning_rate,
     )
     
-    # --- 学習率スケジューラ ---
-    # 独立したファクトリ関数をプロバイダとして登録
     scheduler = providers.Factory(
         _create_scheduler,
         epochs=config.training.epochs,
-        warmup_epochs=config.training.warmup_epochs,
+        warmup_epochs=config.training.gradient_based.warmup_epochs,
     )
     
-    # --- 損失関数 ---
     standard_loss = providers.Factory(
         CombinedLoss,
-        ce_weight=config.training.loss.ce_weight,
-        spike_reg_weight=config.training.loss.spike_reg_weight,
-        sparsity_reg_weight=config.training.loss.sparsity_reg_weight,
-        mem_reg_weight=config.training.loss.mem_reg_weight,
+        ce_weight=config.training.gradient_based.loss.ce_weight,
+        spike_reg_weight=config.training.gradient_based.loss.spike_reg_weight,
+        sparsity_reg_weight=config.training.gradient_based.loss.sparsity_reg_weight,
+        mem_reg_weight=config.training.gradient_based.loss.mem_reg_weight,
         tokenizer=tokenizer,
     )
+
     distillation_loss = providers.Factory(
         DistillationLoss,
-        ce_weight=config.training.distillation.loss.ce_weight,
-        distill_weight=config.training.distillation.loss.distill_weight,
-        spike_reg_weight=config.training.distillation.loss.spike_reg_weight,
-        sparsity_reg_weight=config.training.distillation.loss.sparsity_reg_weight,
-        mem_reg_weight=config.training.distillation.loss.mem_reg_weight,
-        temperature=config.training.distillation.loss.temperature,
+        ce_weight=config.training.gradient_based.distillation.loss.ce_weight,
+        distill_weight=config.training.gradient_based.distillation.loss.distill_weight,
+        spike_reg_weight=config.training.gradient_based.distillation.loss.spike_reg_weight,
+        sparsity_reg_weight=config.training.gradient_based.distillation.loss.sparsity_reg_weight,
+        mem_reg_weight=config.training.gradient_based.distillation.loss.mem_reg_weight,
+        temperature=config.training.gradient_based.distillation.loss.temperature,
         tokenizer=tokenizer,
     )
     
-    # --- 蒸留用教師モデル ---
     teacher_model = providers.Factory(
         AutoModelForCausalLM.from_pretrained,
-        pretrained_model_name_or_path=config.training.distillation.teacher_model
+        pretrained_model_name_or_path=config.training.gradient_based.distillation.teacher_model
     )
 
-    # --- トレーナー定義 ---
     standard_trainer = providers.Factory(
         BreakthroughTrainer,
+        model=snn_model,
+        optimizer=optimizer,
         criterion=standard_loss,
-        grad_clip_norm=config.training.grad_clip_norm,
-        use_amp=config.training.use_amp,
+        scheduler=scheduler,
+        device=providers.Factory(get_auto_device),
+        grad_clip_norm=config.training.gradient_based.grad_clip_norm,
+        rank=-1, # DDP未使用時のデフォルト値
+        use_amp=config.training.gradient_based.use_amp,
         log_dir=config.training.log_dir,
+        astrocyte_network=astrocyte_network,
     )
 
     distillation_trainer = providers.Factory(
         DistillationTrainer,
+        model=snn_model,
+        optimizer=optimizer,
         criterion=distillation_loss,
-        grad_clip_norm=config.training.grad_clip_norm,
-        use_amp=config.training.use_amp,
+        scheduler=scheduler,
+        device=providers.Factory(get_auto_device),
+        grad_clip_norm=config.training.gradient_based.grad_clip_norm,
+        rank=-1,
+        use_amp=config.training.gradient_based.use_amp,
         log_dir=config.training.log_dir,
+        astrocyte_network=astrocyte_network,
+    )
+
+    # === ✨生物学的学習 (biologically_plausible) のためのプロバイダ (新規追加) ===
+    bio_learning_rule = providers.Factory(
+        get_bio_learning_rule,
+        name=config.training.biologically_plausible.learning_rule,
+        params={
+            "stdp": config.training.biologically_plausible.stdp,
+            "reward_modulated_stdp": config.training.biologically_plausible.reward_modulated_stdp,
+        }
+    )
+
+    bio_snn_model = providers.Factory(
+        BioSNN,
+        n_input=100,  # ダミーの値, 本来はデータに依存
+        n_hidden=50,
+        n_output=10,
+        neuron_params=config.training.biologically_plausible.neuron,
+        learning_rule=bio_learning_rule,
+    )
+    
+    bio_trainer = providers.Factory(
+        BioTrainer,
+        model=bio_snn_model,
+        device=providers.Factory(get_auto_device),
     )
 
 
@@ -153,27 +172,23 @@ class AppContainer(containers.DeclarativeContainer):
     """GradioアプリやAPIなど、アプリケーション層の依存関係を管理するコンテナ。"""
     config = providers.Configuration()
 
-    # --- デバイス選択ロジック ---
     device = providers.Factory(
         lambda cfg_device: get_auto_device() if cfg_device == "auto" else cfg_device,
         cfg_device=config.inference.device
     )
 
-    # --- 推論エンジン ---
     snn_inference_engine = providers.Singleton(
         SNNInferenceEngine,
         model_path=config.model.path,
-        device=device, # 自動選択されたデバイスを注入
+        device=device,
     )
     
-    # --- サービス ---
     chat_service = providers.Factory(
         ChatService,
         snn_engine=snn_inference_engine,
         max_len=config.inference.max_len,
     )
     
-    # --- LangChainアダプタ ---
     langchain_adapter = providers.Factory(
         SNNLangChainAdapter,
         snn_engine=snn_inference_engine,
