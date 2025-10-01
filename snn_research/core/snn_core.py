@@ -181,7 +181,7 @@ class BreakthroughSNN(nn.Module):
 
             if return_spikes or return_full_mems:
                 total_spikes += sum(err.mean() for err in layer_errors)
-                current_mem_avg = sum(m.abs().mean() for m in layer_mems)
+                current_mem_avg = sum((m.abs().mean() for m in layer_mems), start=torch.tensor(0.0, device=input_ids.device))
                 total_mem_potential += current_mem_avg
                 if return_full_mems:
                     all_mems_list.append(current_mem_avg)
@@ -192,3 +192,4 @@ class BreakthroughSNN(nn.Module):
         final_mem = torch.stack(all_mems_list) if return_full_mems and all_mems_list else total_mem_potential / seq_len if seq_len > 0 else torch.tensor(0.0)
 
         return final_logits, avg_spikes, final_mem
+
