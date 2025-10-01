@@ -15,8 +15,8 @@ data:
 
 # 学習パラメータ設定
 training:
-  # paradigm: "gradient_based", "biologically_plausible", "self_supervised" を選択
-  paradigm: "self_supervised"
+  # paradigm: "gradient_based", "biologically_plausible", "self_supervised", "physics_informed" を選択
+  paradigm: "physics_informed"
   epochs: 10
   batch_size: 8
   
@@ -38,7 +38,10 @@ training:
       loss:
         ce_weight: 0.3
         distill_weight: 0.7
-        # ... (以下省略)
+        spike_reg_weight: 0.01
+        sparsity_reg_weight: 0.00001
+        mem_reg_weight: 0.00001
+        temperature: 2.0
 
   # --- 生物学的学習 (biologically_plausible) の設定 ---
   biologically_plausible:
@@ -57,22 +60,32 @@ training:
       tau_eligibility: 100.0
       learning_rate: 0.01
 
-  # --- ✨自己教師あり学習 (self_supervised) の設定 (新規追加) ---
+  # --- 自己教師あり学習 (self_supervised) の設定 ---
   self_supervised:
-    learning_rate: 0.0008 # SSL用に少し高めの学習率
+    learning_rate: 0.0008
     use_scheduler: true
     grad_clip_norm: 1.0
     warmup_epochs: 1
     use_amp: true
     loss:
-      prediction_weight: 1.0 # 予測損失の重み
+      prediction_weight: 1.0
       spike_reg_weight: 0.01
       sparsity_reg_weight: 0.00001
       mem_reg_weight: 0.00001
+
+  # --- 物理情報学習 (physics_informed) の設定 (新規追加) ---
+  physics_informed:
+    learning_rate: 0.0005
+    use_scheduler: true
+    grad_clip_norm: 1.0
+    warmup_epochs: 1
+    use_amp: true
+    loss:
+      ce_weight: 1.0
+      spike_reg_weight: 0.01
+      mem_smoothness_weight: 0.001 # 膜電位の滑らかさに対する正則化項
 
   # ログと評価の設定
   log_dir: "runs/snn_experiment"
   eval_interval: 1
   log_interval: 1
-
-# (以降の inference, app 設定は省略)
