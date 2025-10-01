@@ -4,7 +4,7 @@
 
 from abc import ABC, abstractmethod
 import torch
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 class BioLearningRule(ABC):
     """生物学的学習ルールのための抽象基底クラス。"""
@@ -15,7 +15,7 @@ class BioLearningRule(ABC):
         pre_spikes: torch.Tensor,
         post_spikes: torch.Tensor,
         weights: torch.Tensor,
-        optional_params: Dict[str, Any] = None
+        optional_params: Optional[Dict[str, Any]] = None
     ) -> torch.Tensor:
         """
         シナプス重みの変化量を計算する。
@@ -25,7 +25,7 @@ class BioLearningRule(ABC):
             pre_spikes (torch.Tensor): シナプス前ニューロンの発火
             post_spikes (torch.Tensor): シナプス後ニューロンの発火
             weights (torch.Tensor): 現在のシナプス重み
-            optional_params (Dict[str, Any]): オプションのパラメータ（例: 報酬信号）
+            optional_params (Optional[Dict[str, Any]]): オプションのパラメータ（例: 報酬信号）
 
         Returns:
             torch.Tensor: 計算された重み変化量 (dw)
