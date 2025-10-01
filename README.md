@@ -19,6 +19,7 @@
 
 本システムの認知アーキテクチャは、複数の専門コンポーネントが階層的に連携することで実現されています。
 
+``````mermaid
 graph TD  
     subgraph " "  
         direction LR  
@@ -53,6 +54,7 @@ graph TD
     style A4 fill:\#cde4ff  
     style A5 fill:\#ffe4c4  
     style B5 fill:\#ffcbcb
+```
 
 ## **3\. 主要な実行スクリプト**
 
