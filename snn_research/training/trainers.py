@@ -1,187 +1,290 @@
-# matsushibadenki/snn/snn_research/training/losses.py
-# SNN学習で使用する損失関数
+# matsushibadenki/snn/snn_research/training/trainers.py
+# SNNモデルの学習と評価ループを管理するTrainerクラス (モニタリング・評価機能完備)
 # 
 # 機能:
-# - snn_coreとknowledge_distillationから損失関数クラスを移動・集約。
-# - 蒸留時にTokenizerを統一したため、DistillationLoss内の不整合対応ロジックを削除。
-# - DIコンテナの依存関係解決を遅延させるため、pad_idではなくtokenizerを直接受け取るように変更。
-# - ハードウェア実装を意識し、モデルのスパース性を促進するL1正則化項を追加。
-# - [改善] 学習安定化のため、膜電位（membrane potential）の正則化項を追加。
+# - Metal (mps) デバイスに対応。
+# - TensorBoardと連携し、学習・検証のメトリクスをリアルタイムで可視化。
+# - 検証データセットでモデル性能を評価する `evaluate` メソッドを実装。
+# - 検証結果に基づき、最も性能の良いモデルを `best_model.pth` として保存する機能を追加。
+# - チェックポイントの保存・読み込みロジックを修正し、バッファを除外して再開時のサイズミスマッチエラーを解消。
+# - 損失関数にモデル全体を渡し、スパース性などのハードウェアを意識した正則化を可能に。
+# - [改善] BreakthroughSNNのアーキテクチャ変更に対応し、シーケンス全体の損失を計算するように_run_stepを修正。
+# - [追加] AstrocyteNetworkと連携し、学習中のグローバル活動を監視・調整する機能を追加。
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Dict
-from transformers import PreTrainedTokenizerBase
+from torch.utils.data import DataLoader
+import os
+import collections
+from tqdm import tqdm  # type: ignore
+from typing import Tuple, Dict, Any, Optional
+import shutil
 
-def _calculate_sparsity_loss(model: nn.Module) -> torch.Tensor:
-    """モデルの重みのL1ノルムを計算し、スパース性を促進する。"""
-    params = [p for p in model.parameters() if p.requires_grad]
-    if not params:
-        return torch.tensor(0.0)
+from snn_research.training.losses import CombinedLoss, DistillationLoss
+from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
+from torch.utils.tensorboard import SummaryWriter
 
-    device = params[0].device
-    l1_norm = sum(
-        (p.abs().sum() for p in params),
-        start=torch.tensor(0.0, device=device)
-    )
-    return l1_norm
-
-class CombinedLoss(nn.Module):
-    """クロスエントロピー損失、各種正則化を組み合わせた損失関数。"""
-    def __init__(self, ce_weight: float, spike_reg_weight: float, sparsity_reg_weight: float, mem_reg_weight: float, tokenizer: PreTrainedTokenizerBase, target_spike_rate: float = 0.02):
-        super().__init__()
-        pad_id = tokenizer.pad_token_id
-        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
-        self.weights = {'ce': ce_weight, 'spike_reg': spike_reg_weight, 'sparsity_reg': sparsity_reg_weight, 'mem_reg': mem_reg_weight}
-        self.target_spike_rate = target_spike_rate
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module) -> dict:
-        ce_loss = self.ce_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
+class BreakthroughTrainer:
+    """モニタリングと評価機能を完備した、SNNの統合トレーニングシステム。"""
+    def __init__(self, model: nn.Module, optimizer: torch.optim.Optimizer, criterion: nn.Module,
+                 scheduler: Optional[torch.optim.lr_scheduler.LRScheduler], device: str,
+                 grad_clip_norm: float, rank: int, use_amp: bool, log_dir: str,
+                 astrocyte_network: Optional[AstrocyteNetwork] = None):
+        self.model = model
+        self.device = device
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.criterion = criterion
+        self.grad_clip_norm = grad_clip_norm
+        self.rank = rank
+        self.use_amp = use_amp and self.device != 'mps'
+        self.astrocyte_network = astrocyte_network # アストロサイトを追加
         
-        spike_rate = spikes.mean()
-        spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self.best_metric = float('inf')
         
-        sparsity_loss = _calculate_sparsity_loss(model)
+        if self.rank in [-1, 0]:
+            self.writer = SummaryWriter(log_dir)
+            print(f"✅ TensorBoard logging enabled. Log directory: {log_dir}")
 
-        # 膜電位が大きくなりすぎないように正則化
-        mem_reg_loss = torch.mean(mem**2)
-        
-        total_loss = (self.weights['ce'] * ce_loss + 
-                      self.weights['spike_reg'] * spike_reg_loss +
-                      self.weights['sparsity_reg'] * sparsity_loss +
-                      self.weights['mem_reg'] * mem_reg_loss)
-        
-        return {
-            'total': total_loss, 'ce_loss': ce_loss,
-            'spike_reg_loss': spike_reg_loss, 'sparsity_loss': sparsity_loss,
-            'mem_reg_loss': mem_reg_loss, 'spike_rate': spike_rate
-        }
-
-class DistillationLoss(nn.Module):
-    """知識蒸留のための損失関数（各種正則化付き）。"""
-    def __init__(self, tokenizer: PreTrainedTokenizerBase, ce_weight: float, distill_weight: float,
-                 spike_reg_weight: float, sparsity_reg_weight: float, mem_reg_weight: float, temperature: float, target_spike_rate: float = 0.02):
-        super().__init__()
-        student_pad_id = tokenizer.pad_token_id
-        self.temperature = temperature
-        self.weights = {'ce': ce_weight, 'distill': distill_weight, 'spike_reg': spike_reg_weight, 'sparsity_reg': sparsity_reg_weight, 'mem_reg': mem_reg_weight}
-        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=student_pad_id if student_pad_id is not None else -100)
-        self.distill_loss_fn = nn.KLDivLoss(reduction='batchmean', log_target=False)
-        self.target_spike_rate = target_spike_rate
-
-    def forward(self, student_logits: torch.Tensor, teacher_logits: torch.Tensor,
-                targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module) -> Dict[str, torch.Tensor]:
-
-        assert student_logits.shape == teacher_logits.shape, \
-            f"Shape mismatch! Student: {student_logits.shape}, Teacher: {teacher_logits.shape}"
-
-        ce_loss = self.ce_loss_fn(student_logits.view(-1, student_logits.size(-1)), targets.view(-1))
-        
-        soft_student_log_probs = F.log_softmax(student_logits / self.temperature, dim=-1)
-        soft_teacher_probs = F.softmax(teacher_logits / self.temperature, dim=-1)
-        distill_loss = self.distill_loss_fn(soft_student_log_probs, soft_teacher_probs) * (self.temperature ** 2)
-
-        spike_rate = spikes.mean()
-        target_spike_rate = torch.tensor(self.target_spike_rate, device=spikes.device)
-        spike_reg_loss = F.mse_loss(spike_rate, target_spike_rate)
-
-        sparsity_loss = _calculate_sparsity_loss(model)
-        
-        mem_reg_loss = torch.mean(mem**2)
-
-        total_loss = (self.weights['ce'] * ce_loss +
-                      self.weights['distill'] * distill_loss +
-                      self.weights['spike_reg'] * spike_reg_loss +
-                      self.weights['sparsity_reg'] * sparsity_loss +
-                      self.weights['mem_reg'] * mem_reg_loss)
-
-        return {
-            'total': total_loss, 'ce_loss': ce_loss,
-            'distill_loss': distill_loss, 'spike_reg_loss': spike_reg_loss,
-            'sparsity_loss': sparsity_loss, 'mem_reg_loss': mem_reg_loss
-        }
-        
-class SelfSupervisedLoss(nn.Module):
-    """
-    時間的自己教師あり学習のための損失関数。
-    次のトークンを予測するタスクと、各種正則化を組み合わせる。
-    """
-    def __init__(self, prediction_weight: float, spike_reg_weight: float, sparsity_reg_weight: float, mem_reg_weight: float, tokenizer: PreTrainedTokenizerBase, target_spike_rate: float = 0.02):
-        super().__init__()
-        pad_id = tokenizer.pad_token_id
-        # CombinedLossと同様にクロスエントロピーを使用
-        self.prediction_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
-        self.weights = {
-            'prediction': prediction_weight,
-            'spike_reg': spike_reg_weight,
-            'sparsity_reg': sparsity_reg_weight,
-            'mem_reg': mem_reg_weight
-        }
-        self.target_spike_rate = target_spike_rate
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem: torch.Tensor, model: nn.Module) -> dict:
-        # 次のトークン予測の損失
-        prediction_loss = self.prediction_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
-        
-        # CombinedLossから正則化項の計算を流用
-        spike_rate = spikes.mean()
-        spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
-        
-        sparsity_loss = _calculate_sparsity_loss(model)
-
-        mem_reg_loss = torch.mean(mem**2)
-        
-        total_loss = (self.weights['prediction'] * prediction_loss + 
-                      self.weights['spike_reg'] * spike_reg_loss +
-                      self.weights['sparsity_reg'] * sparsity_loss +
-                      self.weights['mem_reg'] * mem_reg_loss)
-        
-        return {
-            'total': total_loss, 'prediction_loss': prediction_loss,
-            'spike_reg_loss': spike_reg_loss, 'sparsity_loss': sparsity_loss,
-            'mem_reg_loss': mem_reg_loss, 'spike_rate': spike_rate
-        }
-
-
-class PhysicsInformedLoss(nn.Module):
-    """
-    物理法則（膜電位の滑らかさ）を制約として組み込んだ損失関数。
-    """
-    def __init__(self, ce_weight: float, spike_reg_weight: float, mem_smoothness_weight: float, tokenizer: PreTrainedTokenizerBase, target_spike_rate: float = 0.02):
-        super().__init__()
-        pad_id = tokenizer.pad_token_id
-        self.ce_loss_fn = nn.CrossEntropyLoss(ignore_index=pad_id if pad_id is not None else -100)
-        self.weights = {
-            'ce': ce_weight,
-            'spike_reg': spike_reg_weight,
-            'mem_smoothness': mem_smoothness_weight,
-        }
-        self.target_spike_rate = target_spike_rate
-
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor, spikes: torch.Tensor, mem_sequence: torch.Tensor, model: nn.Module) -> dict:
-        # クロスエントロピー損失
-        ce_loss = self.ce_loss_fn(logits.view(-1, logits.size(-1)), targets.view(-1))
-        
-        # スパイク正則化
-        spike_rate = spikes.mean()
-        spike_reg_loss = F.mse_loss(spike_rate, torch.tensor(self.target_spike_rate, device=spike_rate.device))
-        
-        # 物理損失: 膜電位の急激な変化にペナルティ（時間的滑らかさ）
-        if mem_sequence.numel() > 1:
-            # 差分の2乗平均を計算
-            mem_diff = torch.diff(mem_sequence)
-            mem_smoothness_loss = torch.mean(mem_diff**2)
+    def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
+        if is_train:
+            self.model.train()
         else:
-            mem_smoothness_loss = torch.tensor(0.0, device=logits.device)
+            self.model.eval()
 
-        total_loss = (self.weights['ce'] * ce_loss +
-                      self.weights['spike_reg'] * spike_reg_loss +
-                      self.weights['mem_smoothness'] * mem_smoothness_loss)
+        input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
         
-        return {
-            'total': total_loss, 'ce_loss': ce_loss,
-            'spike_reg_loss': spike_reg_loss,
-            'mem_smoothness_loss': mem_smoothness_loss,
-            'spike_rate': spike_rate
-        }
+        with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
+            with torch.set_grad_enabled(is_train):
+                logits, spikes, mem = self.model(input_ids, return_spikes=True)
+                loss_dict = self.criterion(logits, target_ids, spikes, mem, self.model)
+        
+        if is_train:
+            self.optimizer.zero_grad()
+            if self.use_amp:
+                self.scaler.scale(loss_dict['total']).backward()
+                if self.grad_clip_norm > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss_dict['total'].backward()
+                if self.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.optimizer.step()
+            
+            # アストロサイトにステップを通知
+            if self.astrocyte_network:
+                self.astrocyte_network.step()
+
+        with torch.no_grad():
+            preds = torch.argmax(logits, dim=-1)
+            if isinstance(self.criterion, CombinedLoss):
+                ignore_idx = self.criterion.ce_loss_fn.ignore_index
+                mask = target_ids != ignore_idx
+                accuracy = (preds[mask] == target_ids[mask]).sum().float() / mask.sum() if mask.sum() > 0 else torch.tensor(0.0)
+                loss_dict['accuracy'] = accuracy
+
+        return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
+
+    def train_epoch(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
+        total_metrics: Dict[str, float] = collections.defaultdict(float)
+        num_batches = len(dataloader)
+        progress_bar = tqdm(dataloader, desc=f"Training Epoch {epoch}", disable=(self.rank not in [-1, 0]))
+        
+        self.model.train()
+        for batch in progress_bar:
+            metrics = self._run_step(batch, is_train=True)
+            for key, value in metrics.items(): total_metrics[key] += value
+            progress_bar.set_postfix({k: v / (progress_bar.n + 1) for k, v in total_metrics.items()})
+
+
+        if self.scheduler: self.scheduler.step()
+        
+        avg_metrics = {key: value / num_batches for key, value in total_metrics.items()}
+        
+        if self.rank in [-1, 0]:
+            for key, value in avg_metrics.items():
+                self.writer.add_scalar(f'Train/{key}', value, epoch)
+            self.writer.add_scalar('Train/learning_rate', self.scheduler.get_last_lr()[0] if self.scheduler else self.optimizer.param_groups[0]['lr'], epoch)
+        
+        return avg_metrics
+
+    def evaluate(self, dataloader: DataLoader, epoch: int) -> Dict[str, float]:
+        """検証データセットでモデルを評価する。"""
+        total_metrics: Dict[str, float] = collections.defaultdict(float)
+        num_batches = len(dataloader)
+        progress_bar = tqdm(dataloader, desc=f"Evaluating Epoch {epoch}", disable=(self.rank not in [-1, 0]))
+        
+        self.model.eval()
+        with torch.no_grad():
+            for batch in progress_bar:
+                metrics = self._run_step(batch, is_train=False)
+                for key, value in metrics.items(): total_metrics[key] += value
+        
+        avg_metrics = {key: value / num_batches for key, value in total_metrics.items()}
+        
+        if self.rank in [-1, 0]:
+            print(f"Epoch {epoch} Validation Results: " + ", ".join([f"{k}: {v:.4f}" for k, v in avg_metrics.items()]))
+            for key, value in avg_metrics.items():
+                self.writer.add_scalar(f'Validation/{key}', value, epoch)
+        
+        return avg_metrics
+
+    def save_checkpoint(self, path: str, epoch: int, metric_value: float, **kwargs: Any):
+        if self.rank in [-1, 0]:
+            model_to_save = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+            
+            # 状態を持たないニューロンのバッファ（memなど）は保存しない
+            buffer_names = {name for name, _ in model_to_save.named_buffers() if 'mem' not in name}
+            model_state = {k: v for k, v in model_to_save.state_dict().items() if k not in buffer_names}
+
+            state = {
+                'epoch': epoch, 'model_state_dict': model_state, 
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'best_metric': self.best_metric
+            }
+            if self.use_amp:
+                state['scaler_state_dict'] = self.scaler.state_dict()
+            if self.scheduler: 
+                state['scheduler_state_dict'] = self.scheduler.state_dict()
+            state.update(kwargs)
+            
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            torch.save(state, path)
+            print(f"✅ チェックポイントを '{path}' に保存しました (Epoch: {epoch})。")
+            
+            is_best = metric_value < self.best_metric
+            if is_best:
+                self.best_metric = metric_value
+                best_path = os.path.join(os.path.dirname(path), 'best_model.pth')
+                
+                # ベストモデルには、推論に必要な情報のみを保存
+                temp_state_for_best = {'model_state_dict': model_state}
+                temp_state_for_best.update(kwargs)
+                torch.save(temp_state_for_best, best_path)
+                print(f"🏆 新しいベストモデルを '{best_path}' に保存しました (Metric: {metric_value:.4f})。")
+
+    def load_checkpoint(self, path: str) -> int:
+        if not os.path.exists(path):
+            print(f"⚠️ チェックポイントファイルが見つかりません: {path}。最初から学習を開始します。")
+            return 0
+            
+        map_location = self.device
+        checkpoint = torch.load(path, map_location=map_location)
+        
+        model_to_load = self.model.module if isinstance(self.model, nn.parallel.DistributedDataParallel) else self.model
+        
+        # strict=Falseで、バッファなどの不一致を許容
+        model_to_load.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        
+        if 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        if self.scheduler and 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        if self.use_amp and 'scaler_state_dict' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+
+        self.best_metric = checkpoint.get('best_metric', float('inf'))
+        start_epoch = checkpoint.get('epoch', 0)
+        print(f"✅ チェックポイント '{path}' を正常にロードしました。Epoch {start_epoch} から学習を再開します。")
+        return start_epoch
+
+
+class DistillationTrainer(BreakthroughTrainer):
+    """知識蒸留に特化したトレーナー（予測符号化モデル対応）。"""
+    def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
+        if is_train: self.model.train()
+        else: self.model.eval()
+            
+        student_input, student_target, teacher_logits = [t.to(self.device) for t in batch]
+
+        with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
+            with torch.set_grad_enabled(is_train):
+                student_logits, spikes, mem = self.model(student_input, return_spikes=True)
+                
+                assert isinstance(self.criterion, DistillationLoss)
+                loss_dict = self.criterion(
+                    student_logits=student_logits,
+                    teacher_logits=teacher_logits,
+                    targets=student_target,
+                    spikes=spikes,
+                    mem=mem,
+                    model=self.model
+                )
+        
+        if is_train:
+            self.optimizer.zero_grad()
+            self.scaler.scale(loss_dict['total']).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            
+            # アストロサイトにステップを通知
+            if self.astrocyte_network:
+                self.astrocyte_network.step()
+        
+        return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
+        
+        
+class SelfSupervisedTrainer(BreakthroughTrainer):
+    """自己教師あり学習に特化したトレーナー。"""
+    # BreakthroughTrainerのロジックをそのまま継承する。
+    # DIコンテナによって、criterionにSelfSupervisedLossが注入されることで、
+    # 振る舞いが変わる。
+    # 将来的にSSL特有のロジック（例: データ拡張）が必要になった場合に、
+    # このクラスのメソッドをオーバーライドする。
+    pass
+    
+
+class PhysicsInformedTrainer(BreakthroughTrainer):
+    """物理情報SNNのためのトレーナー。"""
+    def _run_step(self, batch: Tuple[torch.Tensor, ...], is_train: bool) -> Dict[str, Any]:
+        if is_train:
+            self.model.train()
+        else:
+            self.model.eval()
+
+        input_ids, target_ids = [t.to(self.device) for t in batch[:2]]
+        
+        with torch.amp.autocast(device_type=self.device, enabled=self.use_amp):
+            with torch.set_grad_enabled(is_train):
+                # モデル呼び出し時に return_full_mems=True を指定
+                logits, spikes, mem_sequence = self.model(input_ids, return_spikes=True, return_full_mems=True)
+                
+                # 完全な膜電位シーケンスを損失関数に渡す
+                loss_dict = self.criterion(logits, target_ids, spikes, mem_sequence, self.model)
+        
+        if is_train:
+            self.optimizer.zero_grad()
+            if self.use_amp:
+                self.scaler.scale(loss_dict['total']).backward()
+                if self.grad_clip_norm > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss_dict['total'].backward()
+                if self.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                self.optimizer.step()
+            
+            if self.astrocyte_network:
+                self.astrocyte_network.step()
+
+        with torch.no_grad():
+            preds = torch.argmax(logits, dim=-1)
+            if hasattr(self.criterion, "ce_loss_fn"):
+                ignore_idx = self.criterion.ce_loss_fn.ignore_index
+                mask = target_ids != ignore_idx
+                accuracy = (preds[mask] == target_ids[mask]).sum().float() / mask.sum() if mask.sum() > 0 else torch.tensor(0.0)
+                loss_dict['accuracy'] = accuracy
+
+        return {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
+
