@@ -15,8 +15,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 # --- プロジェクト内モジュールのインポート (既存) ---
 from snn_research.core.snn_core import BreakthroughSNN
 from snn_research.deployment import SNNInferenceEngine
-from snn_research.training.losses import CombinedLoss, DistillationLoss, SelfSupervisedLoss
-from snn_research.training.trainers import BreakthroughTrainer, DistillationTrainer, SelfSupervisedTrainer
+from snn_research.training.losses import CombinedLoss, DistillationLoss, SelfSupervisedLoss, PhysicsInformedLoss
+from snn_research.training.trainers import BreakthroughTrainer, DistillationTrainer, SelfSupervisedTrainer, PhysicsInformedTrainer
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
 from .services.chat_service import ChatService
 from .adapters.snn_langchain_adapter import SNNLangChainAdapter
@@ -98,142 +98,16 @@ class TrainingContainer(containers.DeclarativeContainer):
     )
 
     # === 生物学的学習 (biologically_plausible) のためのプロバイダ ===
-    bio_learning_rule = providers.Factory(get_bio_learning_rule, name=config.training.biologically_plausible.learning_rule, params=config.training.biologically_plausible.to_dict())
+    bio_learning_rule = providers.Factory(
+        get_bio_learning_rule,
+        name=config.training.biologically_plausible.learning_rule,
+        params=config.training.biologically_plausible.to_dict()
+    )
     bio_snn_model = providers.Factory(
         BioSNN, n_input=100, n_hidden=50, n_output=10,
         neuron_params=config.training.biologically_plausible.neuron, learning_rule=bio_learning_rule,
     )
     bio_trainer = providers.Factory(BioTrainer, model=bio_snn_model, device=providers.Factory(get_auto_device))
-
-    
-    astrocyte_network = providers.Factory(
-        AstrocyteNetwork,
-        snn_model=snn_model
-    )
-    
-    optimizer = providers.Factory(
-        AdamW,
-        lr=config.training.gradient_based.learning_rate,
-    )
-    
-    scheduler = providers.Factory(
-        _create_scheduler,
-        epochs=config.training.epochs,
-        warmup_epochs=config.training.gradient_based.warmup_epochs,
-    )
-    
-    standard_loss = providers.Factory(
-        CombinedLoss,
-        ce_weight=config.training.gradient_based.loss.ce_weight,
-        spike_reg_weight=config.training.gradient_based.loss.spike_reg_weight,
-        sparsity_reg_weight=config.training.gradient_based.loss.sparsity_reg_weight,
-        mem_reg_weight=config.training.gradient_based.loss.mem_reg_weight,
-        tokenizer=tokenizer,
-    )
-
-    distillation_loss = providers.Factory(
-        DistillationLoss,
-        ce_weight=config.training.gradient_based.distillation.loss.ce_weight,
-        distill_weight=config.training.gradient_based.distillation.loss.distill_weight,
-        spike_reg_weight=config.training.gradient_based.distillation.loss.spike_reg_weight,
-        sparsity_reg_weight=config.training.gradient_based.distillation.loss.sparsity_reg_weight,
-        mem_reg_weight=config.training.gradient_based.distillation.loss.mem_reg_weight,
-        temperature=config.training.gradient_based.distillation.loss.temperature,
-        tokenizer=tokenizer,
-    )
-    
-    teacher_model = providers.Factory(
-        AutoModelForCausalLM.from_pretrained,
-        pretrained_model_name_or_path=config.training.gradient_based.distillation.teacher_model
-    )
-
-    standard_trainer = providers.Factory(
-        BreakthroughTrainer,
-        model=snn_model,
-        optimizer=optimizer,
-        criterion=standard_loss,
-        scheduler=scheduler,
-        device=providers.Factory(get_auto_device),
-        grad_clip_norm=config.training.gradient_based.grad_clip_norm,
-        rank=-1, # DDP未使用時のデフォルト値
-        use_amp=config.training.gradient_based.use_amp,
-        log_dir=config.training.log_dir,
-        astrocyte_network=astrocyte_network,
-    )
-
-    distillation_trainer = providers.Factory(
-        DistillationTrainer,
-        model=snn_model,
-        optimizer=optimizer,
-        criterion=distillation_loss,
-        scheduler=scheduler,
-        device=providers.Factory(get_auto_device),
-        grad_clip_norm=config.training.gradient_based.grad_clip_norm,
-        rank=-1,
-        use_amp=config.training.gradient_based.use_amp,
-        log_dir=config.training.log_dir,
-        astrocyte_network=astrocyte_network,
-    )
-
-    # === ✨生物学的学習 (biologically_plausible) のためのプロバイダ (新規追加) ===
-    bio_learning_rule = providers.Factory(
-        get_bio_learning_rule,
-        name=config.training.biologically_plausible.learning_rule,
-        params={
-            "stdp": config.training.biologically_plausible.stdp,
-            "reward_modulated_stdp": config.training.biologically_plausible.reward_modulated_stdp,
-        }
-    )
-
-    bio_snn_model = providers.Factory(
-        BioSNN,
-        n_input=100,  # ダミーの値, 本来はデータに依存
-        n_hidden=50,
-        n_output=10,
-        neuron_params=config.training.biologically_plausible.neuron,
-        learning_rule=bio_learning_rule,
-    )
-    
-    bio_trainer = providers.Factory(
-        BioTrainer,
-        model=bio_snn_model,
-        device=providers.Factory(get_auto_device),
-    )
-
-    # === ✨自己教師あり学習 (self_supervised) のためのプロバイダ (新規追加) ===
-    ssl_optimizer = providers.Factory(
-        AdamW,
-        lr=config.training.self_supervised.learning_rate,
-    )
-
-    ssl_scheduler = providers.Factory(
-        _create_scheduler,
-        epochs=config.training.epochs,
-        warmup_epochs=config.training.self_supervised.warmup_epochs,
-    )
-    
-    self_supervised_loss = providers.Factory(
-        SelfSupervisedLoss,
-        prediction_weight=config.training.self_supervised.loss.prediction_weight,
-        spike_reg_weight=config.training.self_supervised.loss.spike_reg_weight,
-        sparsity_reg_weight=config.training.self_supervised.loss.sparsity_reg_weight,
-        mem_reg_weight=config.training.self_supervised.loss.mem_reg_weight,
-        tokenizer=tokenizer,
-    )
-
-    self_supervised_trainer = providers.Factory(
-        SelfSupervisedTrainer,
-        model=snn_model,
-        optimizer=ssl_optimizer, # SSL専用オプティマイザ
-        criterion=self_supervised_loss, # SSL専用損失関数
-        scheduler=ssl_scheduler, # SSL専用スケジューラ
-        device=providers.Factory(get_auto_device),
-        grad_clip_norm=config.training.self_supervised.grad_clip_norm,
-        rank=-1,
-        use_amp=config.training.self_supervised.use_amp,
-        log_dir=config.training.log_dir,
-        astrocyte_network=astrocyte_network, # アストロサイトは共用可能
-    )
 
 
 class AppContainer(containers.DeclarativeContainer):
@@ -243,4 +117,3 @@ class AppContainer(containers.DeclarativeContainer):
     snn_inference_engine = providers.Singleton(SNNInferenceEngine, model_path=config.model.path, device=device)
     chat_service = providers.Factory(ChatService, snn_engine=snn_inference_engine, max_len=config.inference.max_len)
     langchain_adapter = providers.Factory(SNNLangChainAdapter, snn_engine=snn_inference_engine)
-
