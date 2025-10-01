@@ -19,42 +19,41 @@
 
 本システムの認知アーキテクチャは、複数の専門コンポーネントが階層的に連携することで実現されています。
 
-``````mermaid
+```mermaid
 graph TD
-    subgraph 自律ループ_Digital_Life_Form
-        direction LR
-        subgraph 自律ループ_Inner
-            direction TB
-            A1["内発的動機付け<br/>(Intrinsic Motivation)"] --> A2{"探求 or 改善？<br/>(Should Explore?)"}
-            A2 -->|探求 (退屈している)| A3["創発システム<br/>(Emergent System)<br/>未知の課題を発見"]
-            A2 -->|改善 (現状に満足)| A4["自己進化エージェント<br/>(Self-Evolving Agent)<br/>自己コードを改善"]
-            A3 --> A5["階層的プランナー<br/>(Hierarchical Planner)"]
-        end
+  subgraph AutonLoop["自律ループ (Digital Life Form)"]
+    direction LR
+    subgraph Inner["Inner"]
+      direction TB
+      A1["内発的動機付け\n(Intrinsic Motivation)"] --> A2{探求 or 改善？\n(Should Explore?)"}
+      A2 -->|探求 (退屈している)| A3["創発システム\n(Emergent System)\n未知の課題を発見"]
+      A2 -->|改善 (現状に満足)| A4["自己進化エージェント\n(Self-Evolving Agent)\n自己コードを改善"]
+      A3 --> A5["階層的プランナー\n(Hierarchical Planner)"]
     end
+  end
 
-    subgraph エージェント実行コア_Agent_Core
-        direction TB
-        A5 -->|計画| A6["グローバル・ワークスペース<br/>(Global Workspace)"]
-        A6 -->|サブタスク| A7["専門家SNN<br/>(Specialist SNN)"]
-        A7 --> A6
-        A6 -->|知識が必要| A8["RAGシステム<br/>(Vector Store)"]
-    end
+  subgraph AgentCore["エージェント実行コア (Agent Core)"]
+    direction TB
+    A5 -->|計画| A6["グローバル・ワークスペース\n(Global Workspace)"]
+    A6 -->|サブタスク| A7["専門家SNN\n(Specialist SNN)"]
+    A7 --> A6
+    A6 -->|知識が必要| A8["RAGシステム\n(Vector Store)"]
+  end
 
-    subgraph 学習エンジン_Learning_Engine
-        direction TB
-        B1["train.py"] -->|起動| B2["Trainer"]
-        B2 -->|学習ループ| B3["BreakthroughSNN"]
-        B3 -->|損失| B4["損失関数"]
-        B4 -->|誤差| B5["メタ認知SNN (SNAKE)"]
-        B5 -->|注意変調| B3
-        B3 -->|パラメータ更新| B2
-    end
+  subgraph LearningEngine["学習エンジン (Learning Engine)"]
+    direction TB
+    B1["train.py"] -->|起動| B2["Trainer"]
+    B2 -->|学習ループ| B3["BreakthroughSNN"]
+    B3 -->|損失| B4["損失関数"]
+    B4 -->|誤差| B5["メタ認知SNN (SNAKE)"]
+    B5 -->|注意変調| B3
+    B3 -->|パラメータ更新| B2
+  end
 
-    %% 見た目のスタイル
-    style A1 fill:#cde4ff
-    style A4 fill:#cde4ff
-    style A5 fill:#ffe4c4
-    style B5 fill:#ffcbcb
+  style A1 fill:#cde4ff
+  style A4 fill:#cde4ff
+  style A5 fill:#ffe4c4
+  style B5 fill:#ffcbcb
 ```
 
 ## **3\. 主要な実行スクリプト**
