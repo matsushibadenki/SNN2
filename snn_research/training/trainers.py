@@ -230,3 +230,13 @@ class DistillationTrainer(BreakthroughTrainer):
                 self.astrocyte_network.step()
         
         return {k: v.cpu().item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
+        
+        
+class SelfSupervisedTrainer(BreakthroughTrainer):
+    """自己教師あり学習に特化したトレーナー。"""
+    # BreakthroughTrainerのロジックをそのまま継承する。
+    # DIコンテナによって、criterionにSelfSupervisedLossが注入されることで、
+    # 振る舞いが変わる。
+    # 将来的にSSL特有のロジック（例: データ拡張）が必要になった場合に、
+    # このクラスのメソッドをオーバーライドする。
+    pass
