@@ -5,60 +5,87 @@
 # - ハードコードされたルールベースの計画立案を撤廃。
 # - ModelRegistryと連携し、エージェントが利用可能なスキル（専門家モデル）に基づいて
 #   動的に実行計画を生成するロジックに変更。
-# - 将来的に学習可能な「プランナーSNN」への置き換えを見据えた設計にした。
+# - [改善] 学習済みの「プランナーSNN」をロードし、計画立案を知能化。
+
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+import torch
+import os
+from transformers import AutoTokenizer
 
 from .global_workspace import GlobalWorkspace
 from snn_research.agent.memory import Memory
 from snn_research.distillation.model_registry import ModelRegistry
+from .planner_snn import PlannerSNN
 from typing import Optional, Dict, Any, List
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 class HierarchicalPlanner:
     """
     複雑なタスクをサブタスクに分解し、GlobalWorkspaceと連携して実行を管理する。
     自己の能力（利用可能な専門家モデル）に基づき、動的に計画を立案する。
     """
-    def __init__(self):
+    def __init__(self, planner_model_path: str = "runs/planner_snn.pth"):
         self.workspace = GlobalWorkspace()
         self.memory = Memory()
         self.registry = ModelRegistry()
-        # 将来的には、このプランナー自体が学習可能なSNNモデルになる
-        # self.planner_snn = self.load_planner_model()
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
+        self.tokenizer = AutoTokenizer.from_pretrained("gpt2") # コンフィグから取得するのが望ましい
+        self.available_skills = list(self.registry.registry.keys())
+        self.skill_to_id = {skill: i for i, skill in enumerate(self.available_skills)}
+        self.id_to_skill = {i: skill for skill, i in self.skill_to_id.items()}
 
+        self.planner_snn = self._load_planner_model(planner_model_path)
+        # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    def _load_planner_model(self, model_path: str) -> Optional[PlannerSNN]:
+        """学習済みのプランナーSNNモデルをロードする。"""
+        if not self.available_skills or not os.path.exists(model_path):
+            print("⚠️ プランナーSNNモデルが見つからないか、利用可能なスキルがありません。ルールベースのフォールバックは現在ありません。")
+            return None
+        
+        # モデル設定はダミー（本来はDIコンテナ経由で取得）
+        model_config = {'d_model': 128, 'd_state': 64, 'num_layers': 4, 'time_steps': 20, 'n_head': 2}
+        
+        planner_model = PlannerSNN(
+            vocab_size=self.tokenizer.vocab_size,
+            num_skills=len(self.available_skills),
+            **model_config
+        ).to(self.device)
+        
+        planner_model.load_state_dict(torch.load(model_path, map_location=self.device))
+        planner_model.eval()
+        print("✅ 学習済みプランナーSNNを正常にロードしました。")
+        return planner_model
+
+    @torch.no_grad()
     def _create_plan(self, task_request: str) -> List[str]:
         """
-        自然言語のタスク要求と、利用可能な専門家モデルのリストから、
-        実行すべきサブタスクのシーケンスを動的に生成する。
+        学習済みプランナーSNNを用いて、実行計画を動的に推論する。
         """
-        print("📝 実行計画を立案中...")
-        
-        # 1. 現在利用可能な全てのスキル（専門家タスク）をモデル登録簿から取得
-        available_skills = list(self.registry.registry.keys())
-        if not available_skills:
-            print("  - ⚠️ 利用可能な専門家モデルが一つも登録されていません。")
+        print("📝 プランナーSNNが実行計画を推論中...")
+        if not self.planner_snn or not self.available_skills:
             return []
-            
-        print(f"  - 利用可能なスキル: {available_skills}")
 
-        # 2. タスク要求の中に、利用可能なスキル名が含まれているかチェックし、計画を生成
-        #    (将来的に、この部分は意味的類似性検索や学習済みプランナーSNNに置き換えられる)
-        plan = []
-        # ユーザーのリクエストの語順を尊重するため、単純なループでスキルを抽出
-        # (例：「要約して、分析して」と「分析して、要約して」は意味が違う)
-        temp_request = task_request.lower()
+        input_ids = self.tokenizer.encode(
+            task_request, return_tensors='pt',
+            max_length=self.planner_snn.time_steps,
+            padding='max_length', truncation=True
+        ).to(self.device)
+
+        # モデルで推論
+        skill_logits, _, _ = self.planner_snn(input_ids)
         
-        # 簡易的な順序抽出
-        found_skills_with_indices = []
-        for skill in available_skills:
-            index = temp_request.find(skill.lower())
-            if index != -1:
-                found_skills_with_indices.append((index, skill))
+        # 最も確率の高いスキルを順番に選択 (複数スキルを予測する場合)
+        # ここでは簡単のため、最も確率の高い2つを選択
+        predicted_skill_ids = torch.topk(skill_logits, k=min(2, len(self.available_skills)), dim=-1).indices.squeeze().tolist()
         
-        # 見つかった位置でソートし、計画を生成
-        found_skills_with_indices.sort()
-        plan = [skill for index, skill in found_skills_with_indices]
+        plan = [self.id_to_skill[skill_id] for skill_id in predicted_skill_ids if skill_id in self.id_to_skill]
         
-        self.memory.add_entry("PLAN_CREATED", {"request": task_request, "available_skills": available_skills, "plan": plan})
+        self.memory.add_entry("PLAN_CREATED", {"request": task_request, "available_skills": self.available_skills, "plan": plan})
         return plan
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
     def execute_task(self, task_request: str, context: str) -> Optional[str]:
         """

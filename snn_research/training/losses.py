@@ -185,3 +185,29 @@ class PhysicsInformedLoss(nn.Module):
             'mem_smoothness_loss': mem_smoothness_loss,
             'spike_rate': spike_rate
         }
+
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+class PlannerLoss(nn.Module):
+    """
+    プランナーSNNの学習用損失関数。
+    予測されたスキルシーケンスと正解のプランを比較する。
+    """
+    def __init__(self):
+        super().__init__()
+        # 順序が重要なので、CrossEntropyLossを使用
+        self.loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
+
+    def forward(self, predicted_logits: torch.Tensor, target_plan: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Args:
+            predicted_logits (torch.Tensor): PlannerSNNからの出力 (batch_size, num_skills)
+            target_plan (torch.Tensor): 正解のスキルIDシーケンス (batch_size, plan_length)
+        """
+        # 簡単のため、プランの最初のスキルのみを予測対象とする
+        # (将来的にはシーケンス・トゥ・シーケンスの損失に拡張可能)
+        target = target_plan[:, 0]
+        
+        loss = self.loss_fn(predicted_logits, target)
+        
+        return {'total': loss, 'planner_loss': loss}
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️

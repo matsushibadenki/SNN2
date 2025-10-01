@@ -15,9 +15,15 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 # --- プロジェクト内モジュールのインポート (既存) ---
 from snn_research.core.snn_core import BreakthroughSNN
 from snn_research.deployment import SNNInferenceEngine
-from snn_research.training.losses import CombinedLoss, DistillationLoss, SelfSupervisedLoss, PhysicsInformedLoss
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+from snn_research.training.losses import CombinedLoss, DistillationLoss, SelfSupervisedLoss, PhysicsInformedLoss, PlannerLoss
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 from snn_research.training.trainers import BreakthroughTrainer, DistillationTrainer, SelfSupervisedTrainer, PhysicsInformedTrainer
 from snn_research.cognitive_architecture.astrocyte_network import AstrocyteNetwork
+from snn_research.cognitive_architecture.meta_cognitive_snn import MetaCognitiveSNN
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+from snn_research.cognitive_architecture.planner_snn import PlannerSNN
+# ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 from .services.chat_service import ChatService
 from .adapters.snn_langchain_adapter import SNNLangChainAdapter
 
@@ -59,6 +65,7 @@ class TrainingContainer(containers.DeclarativeContainer):
         n_head=config.model.n_head, neuron_config=config.model.neuron,
     )
     astrocyte_network = providers.Factory(AstrocyteNetwork, snn_model=snn_model)
+    meta_cognitive_snn = providers.Factory(MetaCognitiveSNN, snn_model=snn_model, **config.training.meta_cognition.to_dict())
 
     # === 勾配ベース学習 (gradient_based) のためのプロバイダ ===
     optimizer = providers.Factory(AdamW, lr=config.training.gradient_based.learning_rate)
@@ -69,12 +76,14 @@ class TrainingContainer(containers.DeclarativeContainer):
     standard_trainer = providers.Factory(
         BreakthroughTrainer, model=snn_model, optimizer=optimizer, criterion=standard_loss, scheduler=scheduler,
         device=providers.Factory(get_auto_device), grad_clip_norm=config.training.gradient_based.grad_clip_norm,
-        rank=-1, use_amp=config.training.gradient_based.use_amp, log_dir=config.training.log_dir, astrocyte_network=astrocyte_network,
+        rank=-1, use_amp=config.training.gradient_based.use_amp, log_dir=config.training.log_dir, 
+        astrocyte_network=astrocyte_network, meta_cognitive_snn=meta_cognitive_snn,
     )
     distillation_trainer = providers.Factory(
         DistillationTrainer, model=snn_model, optimizer=optimizer, criterion=distillation_loss, scheduler=scheduler,
         device=providers.Factory(get_auto_device), grad_clip_norm=config.training.gradient_based.grad_clip_norm,
-        rank=-1, use_amp=config.training.gradient_based.use_amp, log_dir=config.training.log_dir, astrocyte_network=astrocyte_network,
+        rank=-1, use_amp=config.training.gradient_based.use_amp, log_dir=config.training.log_dir, 
+        astrocyte_network=astrocyte_network, meta_cognitive_snn=meta_cognitive_snn,
     )
 
     # === 自己教師あり学習 (self_supervised) のためのプロバイダ ===
@@ -84,7 +93,8 @@ class TrainingContainer(containers.DeclarativeContainer):
     self_supervised_trainer = providers.Factory(
         SelfSupervisedTrainer, model=snn_model, optimizer=ssl_optimizer, criterion=self_supervised_loss, scheduler=ssl_scheduler,
         device=providers.Factory(get_auto_device), grad_clip_norm=config.training.self_supervised.grad_clip_norm,
-        rank=-1, use_amp=config.training.self_supervised.use_amp, log_dir=config.training.log_dir, astrocyte_network=astrocyte_network,
+        rank=-1, use_amp=config.training.self_supervised.use_amp, log_dir=config.training.log_dir, 
+        astrocyte_network=astrocyte_network, meta_cognitive_snn=meta_cognitive_snn,
     )
 
     # === 物理情報学習 (physics_informed) のためのプロバイダ ===
@@ -94,7 +104,8 @@ class TrainingContainer(containers.DeclarativeContainer):
     physics_informed_trainer = providers.Factory(
         PhysicsInformedTrainer, model=snn_model, optimizer=pi_optimizer, criterion=physics_informed_loss, scheduler=pi_scheduler,
         device=providers.Factory(get_auto_device), grad_clip_norm=config.training.physics_informed.grad_clip_norm,
-        rank=-1, use_amp=config.training.physics_informed.use_amp, log_dir=config.training.log_dir, astrocyte_network=astrocyte_network,
+        rank=-1, use_amp=config.training.physics_informed.use_amp, log_dir=config.training.log_dir, 
+        astrocyte_network=astrocyte_network, meta_cognitive_snn=meta_cognitive_snn,
     )
 
     # === 生物学的学習 (biologically_plausible) のためのプロバイダ ===
@@ -108,6 +119,17 @@ class TrainingContainer(containers.DeclarativeContainer):
         neuron_params=config.training.biologically_plausible.neuron, learning_rule=bio_learning_rule,
     )
     bio_trainer = providers.Factory(BioTrainer, model=bio_snn_model, device=providers.Factory(get_auto_device))
+
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↓修正開始◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
+    # === 学習可能プランナー (PlannerSNN) のためのプロバイダ ===
+    planner_snn = providers.Factory(
+        PlannerSNN, vocab_size=tokenizer.provided.vocab_size, d_model=config.model.d_model,
+        d_state=config.model.d_state, num_layers=config.model.num_layers, 
+        time_steps=config.model.time_steps, n_head=config.model.n_head
+    )
+    planner_optimizer = providers.Factory(AdamW, lr=config.training.planner.learning_rate)
+    planner_loss = providers.Factory(PlannerLoss)
+    # ◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️↑修正終わり◾️◾️◾️◾️◾️◾️◾️◾️◾️◾️
 
 
 class AppContainer(containers.DeclarativeContainer):
